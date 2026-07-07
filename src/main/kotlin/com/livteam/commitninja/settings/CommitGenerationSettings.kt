@@ -38,17 +38,17 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
             return state.userPrompt.orEmpty().ifBlank { DefaultCommitPrompt.load() }
         }
 
+    val resolvedCommand: String
+        get() = state.command.orEmpty().ifBlank { profile.defaultCommand }
+
+    val resolvedArguments: String
+        get() = state.arguments.orEmpty().ifBlank { profile.defaultArguments }
+
     fun isConfigured(): Boolean =
-        profile != AgentProfile.NONE && !state.command.isNullOrBlank()
+        profile != AgentProfile.NONE && resolvedCommand.isNotBlank()
 
     fun applyProfileDefaults(profile: AgentProfile) {
         state.profileName = profile.name
-        if (state.command.isNullOrBlank()) {
-            state.command = profile.defaultCommand
-        }
-        if (state.arguments.isNullOrBlank()) {
-            state.arguments = profile.defaultArguments
-        }
     }
 
     fun ensurePromptInitialized() {

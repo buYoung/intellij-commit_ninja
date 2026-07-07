@@ -3,6 +3,7 @@ package com.livteam.commitninja.generation
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.livteam.commitninja.acp.AcpClient
+import com.livteam.commitninja.settings.AgentCommandLine
 import com.livteam.commitninja.settings.CommitGenerationSettings
 
 @Service(Service.Level.PROJECT)
@@ -26,8 +27,8 @@ class CommitMessageGenerationService(private val project: Project) {
         }
         val request = CommitMessageGenerationRequest(
             profile = settings.profile,
-            command = settings.state.command.orEmpty(),
-            arguments = splitArguments(settings.state.arguments.orEmpty()),
+            command = settings.resolvedCommand,
+            arguments = AgentCommandLine.splitArguments(settings.resolvedArguments),
             model = settings.state.model?.takeIf { it.isNotBlank() },
             userPrompt = settings.resolvedUserPrompt,
             branchName = branchName,
@@ -74,16 +75,6 @@ class CommitMessageGenerationService(private val project: Project) {
     private fun String.limitToPromptDetail(): String {
         if (length <= MAX_CHANGE_DETAIL_CHARS) return this
         return take(MAX_CHANGE_DETAIL_CHARS) + "\n<change detail truncated at $MAX_CHANGE_DETAIL_CHARS chars>"
-    }
-
-    private fun splitArguments(arguments: String): List<String> {
-        if (arguments.isBlank()) return emptyList()
-        return Regex("""[^\s"']+|"([^"]*)"|'([^']*)'""")
-            .findAll(arguments)
-            .map { match ->
-                match.groups[1]?.value ?: match.groups[2]?.value ?: match.value
-            }
-            .toList()
     }
 
     private companion object {

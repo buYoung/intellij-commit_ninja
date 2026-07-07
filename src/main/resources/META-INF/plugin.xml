@@ -19,6 +19,11 @@
                 id="com.livteam.commitninja.settings"
                 parentId="tools"
                 displayName="Commit Ninja"/>
+        <applicationConfigurable
+                instance="com.livteam.commitninja.settings.CommitPromptConfigurable"
+                id="com.livteam.commitninja.settings.prompt"
+                parentId="com.livteam.commitninja.settings"
+                displayName="Prompt"/>
         <notificationGroup id="Commit Ninja" displayType="BALLOON"/>
         <toolWindow factoryClass="com.livteam.commitninja.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
         <postStartupActivity implementation="com.livteam.commitninja.startup.MyProjectActivity" />

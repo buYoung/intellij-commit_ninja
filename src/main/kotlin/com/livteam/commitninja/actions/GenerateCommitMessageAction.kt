@@ -32,10 +32,9 @@ class GenerateCommitMessageAction : DumbAwareAction(
         val project = event.project
         val commitMessageControl = event.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL)
         val isConfigured = CommitGenerationSettings.getInstance().isConfigured()
-        val hasCheckedChanges = changesProvider.hasCheckedChanges(event)
         val isGenerating = commitMessageControl != null && InProgress.isGenerating(commitMessageControl)
         event.presentation.isVisible = commitMessageControl != null
-        event.presentation.isEnabled = project != null && commitMessageControl != null && isConfigured && hasCheckedChanges && !isGenerating
+        event.presentation.isEnabled = project != null && commitMessageControl != null && isConfigured && !isGenerating
         event.presentation.text = MyBundle["action.generateCommitMessage.text"]
         event.presentation.description = MyBundle["action.generateCommitMessage.description"]
     }
