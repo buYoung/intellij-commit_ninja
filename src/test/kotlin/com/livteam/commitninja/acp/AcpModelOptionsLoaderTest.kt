@@ -3,18 +3,56 @@ package com.livteam.commitninja.acp
 import com.livteam.commitninja.settings.AgentCommandLine
 import com.livteam.commitninja.settings.AgentProfile
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import kotlin.io.path.exists
 import kotlin.io.path.writeText
 
 class AcpModelOptionsLoaderTest {
     @Test
+    fun `opencode ACP model loader uses newline JSON and sends client version`() {
+        val javaExecutable = javaExecutable()
+        val classpath = System.getProperty("java.class.path")
+        val result = AcpModelOptionsLoader.load(
+            javaExecutable,
+            listOf("-cp", classpath, FakeOpencodeAcpServer::class.java.name),
+            null,
+            AcpModelOptionsLoader.Transport.NEWLINE_JSON,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(
+            listOf("ollama-cloud/deepseek-v4-pro", "ollama-cloud/deepseek-v4-flash"),
+            result.getOrThrow(),
+        )
+    }
+
+    @Test
+    fun `opencode ACP model loader preserves UTF-8 newline JSON option values`() {
+        val javaExecutable = javaExecutable()
+        val classpath = System.getProperty("java.class.path")
+        val result = AcpModelOptionsLoader.load(
+            javaExecutable,
+            listOf("-cp", classpath, FakeUtf8OpencodeAcpServer::class.java.name),
+            null,
+            AcpModelOptionsLoader.Transport.NEWLINE_JSON,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(
+            listOf("ollama-cloud/한글-모델", "로컬/테스트"),
+            result.getOrThrow(),
+        )
+    }
+
+    @Test
     fun `loads model choices from ACP session config options`() {
-        val javaExecutable = "${System.getProperty("java.home")}/bin/java"
+        val javaExecutable = javaExecutable()
         val classpath = System.getProperty("java.class.path")
         val result = AcpModelOptionsLoader.load(
             javaExecutable,
@@ -36,16 +74,48 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
+    fun `codex profile uses ACP adapter command defaults without user command override`() {
+        assertEquals("codex-acp", AgentProfile.CODEX_ACP.defaultCommand)
+        assertEquals(emptyList<String>(), AgentCommandLine.splitArguments(AgentProfile.CODEX_ACP.defaultArguments))
+    }
+
+    @Test
+    fun `claude profile uses ACP adapter command defaults without user command override`() {
+        assertEquals("claude-agent-acp", AgentProfile.CLAUDE_AGENT_ACP.defaultCommand)
+        assertEquals(emptyList<String>(), AgentCommandLine.splitArguments(AgentProfile.CLAUDE_AGENT_ACP.defaultArguments))
+    }
+
+    @Test
+    fun `opencode model loader tries ACP newline JSON before cli models`() {
+        val javaExecutable = javaExecutable()
+        val classpath = System.getProperty("java.class.path")
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.OPENCODE,
+            command = javaExecutable,
+            arguments = listOf("-cp", classpath, FakeOpencodeAcpServer::class.java.name),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(
+            listOf("ollama-cloud/deepseek-v4-pro", "ollama-cloud/deepseek-v4-flash"),
+            result.getOrThrow(),
+        )
+    }
+
+    @Test
     fun `opencode model loader falls back to cli models when ACP config options are empty`() {
         val fakeOpencode = Files.createTempFile("fake-opencode", ".sh")
         fakeOpencode.writeText(
             """
             #!/bin/sh
-            if [ "${'$'}1" = "models" ]; then
-              printf 'openai/gpt-5.1\nanthropic/claude-sonnet-4-5\n'
+            if [ "${'$'}1" = "acp" ]; then
+              exit 0
+            elif [ "${'$'}1" = "models" ]; then
+              printf 'ollama-cloud/deepseek-v4-pro\nollama-cloud/deepseek-v4-flash\n'
               exit 0
             fi
-            exit 0
+            exit 1
             """.trimIndent(),
         )
         fakeOpencode.toFile().setExecutable(true)
@@ -59,9 +129,147 @@ class AcpModelOptionsLoaderTest {
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
         assertEquals(
-            listOf("openai/gpt-5.1", "anthropic/claude-sonnet-4-5"),
+            listOf("ollama-cloud/deepseek-v4-pro", "ollama-cloud/deepseek-v4-flash"),
             result.getOrThrow(),
         )
+    }
+
+    @Test
+    fun `codex model loader reads debug models json catalog`() {
+        val fakeCodex = Files.createTempFile("fake-codex", ".sh")
+        fakeCodex.writeText(
+            """
+            #!/bin/sh
+            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ]; then
+              printf '{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5"},{"slug":"gpt-5.4","display_name":"GPT-5.4"},{"slug":"gpt-5.4-mini","display_name":"GPT-5.4-Mini"}]}\n'
+              exit 0
+            fi
+            exit 1
+            """.trimIndent(),
+        )
+        fakeCodex.toFile().setExecutable(true)
+
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.CODEX_ACP,
+            command = fakeCodex.toAbsolutePath().toString(),
+            arguments = emptyList(),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(
+            listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"),
+            result.getOrThrow(),
+        )
+    }
+
+    @Test
+    fun `codex default adapter command maps to direct codex discovery command`() {
+        assertEquals(
+            "codex",
+            AgentModelOptionsLoader.codexModelDiscoveryCommand(AgentProfile.CODEX_ACP.defaultCommand),
+        )
+    }
+
+    @Test
+    fun `claude model loader returns useful fallback choices only`() {
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.CLAUDE_AGENT_ACP,
+            command = "unused-claude-agent-acp",
+            arguments = emptyList(),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(
+            listOf("default", "opus", "sonnet", "haiku"),
+            result.getOrThrow().also { models ->
+                assertFalse(models.contains("fable"))
+                assertFalse(models.contains("fable5"))
+            },
+        )
+    }
+
+    private fun javaExecutable(): String {
+        val javaHomeExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java")
+        return if (javaHomeExecutable.exists()) javaHomeExecutable.toString() else "java"
+    }
+
+    object FakeOpencodeAcpServer {
+        @JvmStatic
+        fun main(args: Array<String>) {
+            val input = BufferedInputStream(System.`in`)
+            val output = BufferedOutputStream(System.out)
+            while (true) {
+                val message = readJsonLine(input) ?: return
+                when {
+                    "\"id\":1" in message -> {
+                        check("\"clientInfo\"" in message && "\"version\"" in message) {
+                            "initialize request must include clientInfo.version"
+                        }
+                        writeJsonLine(
+                            output,
+                            """
+                            {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}
+                            """.trimIndent(),
+                        )
+                    }
+                    "\"id\":2" in message -> {
+                        writeJsonLine(
+                            output,
+                            """
+                            {"jsonrpc":"2.0","id":2,"result":{"sessionId":"test","configOptions":[{"id":"model","title":"Model","options":[{"value":"ollama-cloud/deepseek-v4-pro"},{"value":"ollama-cloud/deepseek-v4-flash"}]}]}}
+                            """.trimIndent(),
+                        )
+                        return
+                    }
+                }
+            }
+        }
+
+        fun readJsonLine(input: BufferedInputStream): String? {
+            val bytes = mutableListOf<Byte>()
+            while (true) {
+                val next = input.read()
+                if (next == -1) return if (bytes.isEmpty()) null else String(bytes.toByteArray(), StandardCharsets.UTF_8)
+                if (next == '\n'.code) return String(bytes.toByteArray(), StandardCharsets.UTF_8)
+                bytes.add(next.toByte())
+            }
+        }
+
+        fun writeJsonLine(output: BufferedOutputStream, json: String) {
+            output.write(json.toByteArray(StandardCharsets.UTF_8))
+            output.write('\n'.code)
+            output.flush()
+        }
+    }
+
+    object FakeUtf8OpencodeAcpServer {
+        @JvmStatic
+        fun main(args: Array<String>) {
+            val input = BufferedInputStream(System.`in`)
+            val output = BufferedOutputStream(System.out)
+            while (true) {
+                val message = FakeOpencodeAcpServer.readJsonLine(input) ?: return
+                when {
+                    "\"id\":1" in message -> FakeOpencodeAcpServer.writeJsonLine(
+                        output,
+                        """
+                        {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}
+                        """.trimIndent(),
+                    )
+                    "\"id\":2" in message -> {
+                        FakeOpencodeAcpServer.writeJsonLine(
+                            output,
+                            """
+                            {"jsonrpc":"2.0","id":2,"result":{"sessionId":"test","configOptions":[{"id":"model","title":"모델","options":[{"value":"ollama-cloud/한글-모델"},{"value":"로컬/테스트"}]}]}}
+                            """.trimIndent(),
+                        )
+                        return
+                    }
+                }
+            }
+        }
     }
 
     object FakeAcpServer {

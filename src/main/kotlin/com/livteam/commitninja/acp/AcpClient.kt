@@ -11,6 +11,7 @@ import com.livteam.commitninja.generation.CommitMessageGenerationResult
 import com.livteam.commitninja.generation.CommitMessageOutputParser
 import com.livteam.commitninja.generation.GenerationDiagnostic
 import com.livteam.commitninja.generation.GenerationFailureType
+import com.livteam.commitninja.settings.AgentProfile
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.File
@@ -33,7 +34,7 @@ class AcpClient(private val project: Project) {
 
         val executor = AppExecutorUtil.getAppExecutorService()
         executor.submit {
-            process.errorStream.bufferedReader().useLines { lines ->
+            process.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
                 lines.forEach { /* Drain stderr without surfacing diff-adjacent content. */ }
             }
         }
@@ -61,13 +62,15 @@ class AcpClient(private val project: Project) {
     ): CommitMessageGenerationResult {
         val input = BufferedInputStream(process.inputStream)
         val output = BufferedOutputStream(process.outputStream)
+        val transport = transportFor(request.profile)
         send(
             output,
+            transport,
             1,
             "initialize",
             mapOf(
                 "protocolVersion" to 1,
-                "clientInfo" to mapOf("name" to "Commit Ninja"),
+                "clientInfo" to mapOf("name" to "Commit Ninja", "version" to "0.1.0"),
                 "clientCapabilities" to emptyMap<String, Any>(),
             ),
         )
@@ -76,7 +79,7 @@ class AcpClient(private val project: Project) {
             "cwd" to (request.workingDirectory ?: project.basePath ?: ""),
             "mcpServers" to emptyList<Any>(),
         )
-        send(output, 2, "session/new", sessionParams)
+        send(output, transport, 2, "session/new", sessionParams)
         val sessionResponse = readUntilResponse(input, 2)
         val sessionId = sessionResponse["result"]?.asJsonObject?.get("sessionId")?.asString
             ?: sessionResponse["result"]?.asJsonObject?.get("id")?.asString
@@ -87,6 +90,7 @@ class AcpClient(private val project: Project) {
         if (modelConfigOption != null) {
             send(
                 output,
+                transport,
                 3,
                 "session/set_config_option",
                 mapOf(
@@ -99,6 +103,7 @@ class AcpClient(private val project: Project) {
         }
         send(
             output,
+            transport,
             4,
             "session/prompt",
             mapOf(
@@ -110,11 +115,11 @@ class AcpClient(private val project: Project) {
         val transcript = StringBuilder(MAX_ACP_TRANSCRIPT_CHARS.coerceAtMost(16_384))
         while (process.isAlive) {
             val message = readMessage(input) ?: break
-            collectText(message, transcript)
             if (message["id"]?.asInt == 4) {
                 collectText(message["result"]?.asJsonObject, transcript)
                 break
             }
+            collectText(message, transcript)
         }
         process.destroy()
         val parsed = CommitMessageOutputParser.parse(transcript.toString())
@@ -125,13 +130,30 @@ class AcpClient(private val project: Project) {
         }
     }
 
-    private fun send(output: BufferedOutputStream, id: Int, method: String, params: Any?) {
+    private fun send(output: BufferedOutputStream, transport: Transport, id: Int, method: String, params: Any?) {
         val json = gson.toJson(mapOf("jsonrpc" to "2.0", "id" to id, "method" to method, "params" to params))
         val bytes = json.toByteArray(StandardCharsets.UTF_8)
-        output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
-        output.write(bytes)
+        when (transport) {
+            Transport.CONTENT_LENGTH -> {
+                output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
+                output.write(bytes)
+            }
+            Transport.NEWLINE_JSON -> {
+                output.write(bytes)
+                output.write("\n".toByteArray(StandardCharsets.US_ASCII))
+            }
+        }
         output.flush()
     }
+
+    private fun transportFor(profile: AgentProfile): Transport =
+        when (profile) {
+            AgentProfile.OPENCODE -> Transport.NEWLINE_JSON
+            AgentProfile.CLAUDE_AGENT_ACP,
+            AgentProfile.CODEX_ACP,
+            AgentProfile.NONE,
+            -> Transport.CONTENT_LENGTH
+        }
 
     private fun readUntilResponse(input: BufferedInputStream, id: Int): JsonObject {
         while (true) {
@@ -144,10 +166,11 @@ class AcpClient(private val project: Project) {
     }
 
     private fun readMessage(input: BufferedInputStream): JsonObject? {
-        val header = readAsciiLine(input) ?: return null
-        if (header.startsWith("{")) {
-            return JsonParser.parseString(header).asJsonObject
+        val headerBytes = readLineBytes(input) ?: return null
+        if (headerBytes.firstOrNull() == '{'.code.toByte()) {
+            return JsonParser.parseString(String(headerBytes, StandardCharsets.UTF_8)).asJsonObject
         }
+        val header = String(headerBytes, StandardCharsets.US_ASCII)
         var contentLength: Int? = null
         var line = header
         while (line.isNotEmpty()) {
@@ -163,13 +186,18 @@ class AcpClient(private val project: Project) {
     }
 
     private fun readAsciiLine(input: BufferedInputStream): String? {
+        val bytes = readLineBytes(input) ?: return null
+        return String(bytes, StandardCharsets.US_ASCII)
+    }
+
+    private fun readLineBytes(input: BufferedInputStream): ByteArray? {
         val bytes = mutableListOf<Byte>()
         while (true) {
             val next = input.read()
-            if (next == -1) return if (bytes.isEmpty()) null else String(bytes.toByteArray(), StandardCharsets.US_ASCII)
+            if (next == -1) return if (bytes.isEmpty()) null else bytes.toByteArray()
             if (next == '\n'.code) {
                 if (bytes.lastOrNull() == '\r'.code.toByte()) bytes.removeAt(bytes.lastIndex)
-                return String(bytes.toByteArray(), StandardCharsets.US_ASCII)
+                return bytes.toByteArray()
             }
             bytes.add(next.toByte())
         }
@@ -231,5 +259,10 @@ class AcpClient(private val project: Project) {
 
     private companion object {
         const val MAX_ACP_TRANSCRIPT_CHARS = 120_000
+    }
+
+    private enum class Transport {
+        CONTENT_LENGTH,
+        NEWLINE_JSON,
     }
 }

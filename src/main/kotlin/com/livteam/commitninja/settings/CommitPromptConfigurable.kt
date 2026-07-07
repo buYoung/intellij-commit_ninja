@@ -1,19 +1,29 @@
 package com.livteam.commitninja.settings
 
+import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.EditorSettings
+import com.intellij.openapi.editor.ex.EditorEx
+import com.intellij.openapi.editor.highlighter.EditorHighlighterFactory
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.options.SearchableConfigurable
-import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
 import com.livteam.commitninja.MyBundle
 import javax.swing.JComponent
+import javax.swing.ScrollPaneConstants
 
 class CommitPromptConfigurable : SearchableConfigurable {
     private var component: JComponent? = null
-    private val promptEditor = EditorTextField(
+    private val project = ProjectManager.getInstance().openProjects.firstOrNull()
+        ?: ProjectManager.getInstance().defaultProject
+    private val promptEditor = CommitPromptMarkdownEditorField(
         EditorFactory.getInstance().createDocument(""),
-        null,
+        project,
         FileTypeManager.getInstance().getFileTypeByExtension("md"),
         false,
         false,
@@ -61,5 +71,35 @@ class CommitPromptConfigurable : SearchableConfigurable {
 
     override fun disposeUIResources() {
         component = null
+    }
+}
+
+internal class CommitPromptMarkdownEditorField(
+    document: Document,
+    private val editorProject: Project,
+    fileType: FileType,
+    isViewer: Boolean,
+    oneLineMode: Boolean,
+) : EditorTextField(document, editorProject, fileType, isViewer, oneLineMode) {
+    override fun createEditor(): EditorEx {
+        val editor = super.createEditor()
+        editor.highlighter = EditorHighlighterFactory.getInstance().createEditorHighlighter(editorProject, fileType)
+        editor.isOneLineMode = false
+        editor.scrollPane.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        editor.scrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+        editor.settings.applyPromptEditorSettings()
+        return editor
+    }
+
+    internal fun createEditorForInspection(): EditorEx = createEditor()
+
+    private fun EditorSettings.applyPromptEditorSettings() {
+        isLineNumbersShown = true
+        isLineMarkerAreaShown = true
+        isFoldingOutlineShown = true
+        isRightMarginShown = true
+        isUseSoftWraps = true
+        additionalLinesCount = 2
+        additionalColumnsCount = 2
     }
 }

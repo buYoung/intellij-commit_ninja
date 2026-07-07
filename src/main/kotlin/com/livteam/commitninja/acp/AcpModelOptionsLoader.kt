@@ -15,7 +15,12 @@ import java.util.concurrent.TimeoutException
 object AcpModelOptionsLoader {
     private val gson = Gson()
 
-    fun load(command: String, arguments: List<String>, workingDirectory: String?): Result<List<String>> {
+    fun load(
+        command: String,
+        arguments: List<String>,
+        workingDirectory: String?,
+        transport: Transport = Transport.CONTENT_LENGTH,
+    ): Result<List<String>> {
         val process = try {
             ProcessBuilder(listOf(command) + arguments)
                 .directory(workingDirectory?.let(::File))
@@ -27,12 +32,12 @@ object AcpModelOptionsLoader {
         val executor = AppExecutorUtil.getAppExecutorService()
         return try {
             executor.submit {
-                process.errorStream.bufferedReader().useLines { lines ->
+                process.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
                     lines.forEach { /* Drain stderr without surfacing user environment details. */ }
                 }
             }
             val options = executor.submit<List<String>> {
-                runProtocol(process, workingDirectory)
+                runProtocol(process, workingDirectory, transport)
             }.get(15, TimeUnit.SECONDS)
             Result.success(options)
         } catch (exception: TimeoutException) {
@@ -47,7 +52,7 @@ object AcpModelOptionsLoader {
         }
     }
 
-    private fun runProtocol(process: Process, workingDirectory: String?): List<String> {
+    private fun runProtocol(process: Process, workingDirectory: String?, transport: Transport): List<String> {
         val input = BufferedInputStream(process.inputStream)
         val output = BufferedOutputStream(process.outputStream)
         send(
@@ -56,9 +61,10 @@ object AcpModelOptionsLoader {
             "initialize",
             mapOf(
                 "protocolVersion" to 1,
-                "clientInfo" to mapOf("name" to "Commit Ninja"),
+                "clientInfo" to mapOf("name" to "Commit Ninja", "version" to "0.0.1"),
                 "clientCapabilities" to emptyMap<String, Any>(),
             ),
+            transport,
         )
         val initializeResponse = readUntilResponse(input, 1)
         send(
@@ -69,6 +75,7 @@ object AcpModelOptionsLoader {
                 "cwd" to (workingDirectory ?: System.getProperty("user.home").orEmpty()),
                 "mcpServers" to emptyList<Any>(),
             ),
+            transport,
         )
         val sessionResponse = readUntilResponse(input, 2)
         return (findConfigOptions(initializeResponse) + findConfigOptions(sessionResponse))
@@ -81,11 +88,16 @@ object AcpModelOptionsLoader {
             .toList()
     }
 
-    private fun send(output: BufferedOutputStream, id: Int, method: String, params: Any?) {
+    private fun send(output: BufferedOutputStream, id: Int, method: String, params: Any?, transport: Transport) {
         val json = gson.toJson(mapOf("jsonrpc" to "2.0", "id" to id, "method" to method, "params" to params))
         val bytes = json.toByteArray(StandardCharsets.UTF_8)
-        output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
+        if (transport == Transport.CONTENT_LENGTH) {
+            output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
+        }
         output.write(bytes)
+        if (transport == Transport.NEWLINE_JSON) {
+            output.write('\n'.code)
+        }
         output.flush()
     }
 
@@ -100,10 +112,11 @@ object AcpModelOptionsLoader {
     }
 
     private fun readMessage(input: BufferedInputStream): JsonObject? {
-        val header = readAsciiLine(input) ?: return null
-        if (header.startsWith("{")) {
-            return JsonParser.parseString(header).asJsonObject
+        val headerBytes = readLineBytes(input) ?: return null
+        if (headerBytes.firstOrNull() == '{'.code.toByte()) {
+            return JsonParser.parseString(String(headerBytes, StandardCharsets.UTF_8)).asJsonObject
         }
+        val header = String(headerBytes, StandardCharsets.US_ASCII)
         var contentLength: Int? = null
         var line = header
         while (line.isNotEmpty()) {
@@ -119,13 +132,18 @@ object AcpModelOptionsLoader {
     }
 
     private fun readAsciiLine(input: BufferedInputStream): String? {
+        val bytes = readLineBytes(input) ?: return null
+        return String(bytes, StandardCharsets.US_ASCII)
+    }
+
+    private fun readLineBytes(input: BufferedInputStream): ByteArray? {
         val bytes = mutableListOf<Byte>()
         while (true) {
             val next = input.read()
-            if (next == -1) return if (bytes.isEmpty()) null else String(bytes.toByteArray(), StandardCharsets.US_ASCII)
+            if (next == -1) return if (bytes.isEmpty()) null else bytes.toByteArray()
             if (next == '\n'.code) {
                 if (bytes.lastOrNull() == '\r'.code.toByte()) bytes.removeAt(bytes.lastIndex)
-                return String(bytes.toByteArray(), StandardCharsets.US_ASCII)
+                return bytes.toByteArray()
             }
             bytes.add(next.toByte())
         }
@@ -177,5 +195,10 @@ object AcpModelOptionsLoader {
             return element.asJsonArray.flatMap { findConfigOptions(it) }
         }
         return emptyList()
+    }
+
+    enum class Transport {
+        CONTENT_LENGTH,
+        NEWLINE_JSON,
     }
 }

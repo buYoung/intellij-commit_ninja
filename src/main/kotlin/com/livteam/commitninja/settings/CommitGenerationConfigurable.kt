@@ -1,6 +1,7 @@
 package com.livteam.commitninja.settings
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.SearchableConfigurable
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBCheckBox
@@ -11,11 +12,38 @@ import com.intellij.ui.dsl.builder.panel
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.livteam.commitninja.MyBundle
 import com.livteam.commitninja.acp.AgentModelOptionsLoader
+import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JComponent
 
 class CommitGenerationConfigurable : SearchableConfigurable {
+    constructor() : this(
+        modelOptionsLoader = { profile, command, arguments, workingDirectory ->
+            AgentModelOptionsLoader.load(profile, command, arguments, workingDirectory)
+        },
+        backgroundExecutor = AppExecutorUtil.getAppExecutorService(),
+        uiDispatcher = { action ->
+            ApplicationManager.getApplication().invokeLater(action, ModalityState.any())
+        },
+    )
+
+    internal constructor(
+        modelOptionsLoader: (AgentProfile, String, List<String>, String?) -> Result<List<String>>,
+        backgroundExecutor: Executor,
+        uiDispatcher: ((Runnable) -> Unit),
+    ) {
+        this.modelOptionsLoader = modelOptionsLoader
+        this.backgroundExecutor = backgroundExecutor
+        this.uiDispatcher = uiDispatcher
+    }
+
+    private val modelOptionsLoader: (AgentProfile, String, List<String>, String?) -> Result<List<String>>
+    private val backgroundExecutor: Executor
+    private val uiDispatcher: (Runnable) -> Unit
+    private val modelLoadGeneration = AtomicInteger()
+    private var isResetting = false
     private var component: JComponent? = null
     private val profileComboBox = ComboBox(AgentProfile.entries.toTypedArray())
     private val modelComboBoxModel = DefaultComboBoxModel<String>()
@@ -31,7 +59,11 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         modelComboBox.isEditable = false
         profileComboBox.addActionListener {
             refreshDefaultCommandText()
-            setModelOptions(emptyList(), selectedModel())
+            if (!isResetting) {
+                clearModelOptions()
+                modelStatusLabel.text = MyBundle["settings.agent.modelStatus.default"]
+                loadModelOptions()
+            }
         }
         loadModelsButton.addActionListener { loadModelOptions() }
     }
@@ -109,13 +141,19 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         val settings = CommitGenerationSettings.getInstance()
         val state = settings.state
         val profile = AgentProfile.fromStoredName(state.profileName)
-        profileComboBox.selectedItem = profile
-        commandOverrideField.text = normalizedCommandOverride(profile, state.command.orEmpty())
-        argumentsOverrideField.text = normalizedArgumentsOverride(profile, state.arguments.orEmpty())
-        setModelOptions(emptyList(), state.model.orEmpty())
-        confirmBeforeReplaceCheckBox.isSelected = state.confirmBeforeReplace
-        refreshDefaultCommandText()
-        modelStatusLabel.text = MyBundle["settings.agent.modelStatus.default"]
+        isResetting = true
+        try {
+            profileComboBox.selectedItem = profile
+            commandOverrideField.text = normalizedCommandOverride(profile, state.command.orEmpty())
+            argumentsOverrideField.text = normalizedArgumentsOverride(profile, state.arguments.orEmpty())
+            setModelOptions(emptyList(), state.model.orEmpty(), allowCustomSelection = true)
+            confirmBeforeReplaceCheckBox.isSelected = state.confirmBeforeReplace
+            refreshDefaultCommandText()
+            modelStatusLabel.text = MyBundle["settings.agent.modelStatus.default"]
+        } finally {
+            isResetting = false
+        }
+        loadModelOptions()
     }
 
     override fun disposeUIResources() {
@@ -139,14 +177,23 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         }
     }
 
-    private fun setModelOptions(models: List<String>, selectedModel: String) {
+    private fun clearModelOptions() {
+        modelLoadGeneration.incrementAndGet()
+        modelComboBoxModel.removeAllElements()
+        modelComboBoxModel.addElement(MODEL_AGENT_DEFAULT)
+        modelComboBox.selectedItem = MODEL_AGENT_DEFAULT
+    }
+
+    private fun setModelOptions(models: List<String>, selectedModel: String, allowCustomSelection: Boolean) {
         modelComboBoxModel.removeAllElements()
         modelComboBoxModel.addElement(MODEL_AGENT_DEFAULT)
         models.filter(String::isNotBlank).distinct().forEach(modelComboBoxModel::addElement)
-        if (selectedModel.isNotBlank() && modelComboBoxModel.getIndexOf(selectedModel) < 0) {
+        if (allowCustomSelection && selectedModel.isNotBlank() && modelComboBoxModel.getIndexOf(selectedModel) < 0) {
             modelComboBoxModel.addElement(selectedModel)
         }
-        modelComboBox.selectedItem = selectedModel.ifBlank { MODEL_AGENT_DEFAULT }
+        modelComboBox.selectedItem = selectedModel
+            .takeIf { it.isNotBlank() && modelComboBoxModel.getIndexOf(it) >= 0 }
+            ?: MODEL_AGENT_DEFAULT
     }
 
     private fun loadModelOptions() {
@@ -164,29 +211,42 @@ class CommitGenerationConfigurable : SearchableConfigurable {
             argumentsOverrideField.text.trim().ifBlank { profile.defaultArguments },
         )
         val selectedModelBeforeLoad = selectedModel()
+        val requestGeneration = modelLoadGeneration.incrementAndGet()
         loadModelsButton.isEnabled = false
         modelStatusLabel.text = MyBundle["settings.agent.modelStatus.loading"]
-        AppExecutorUtil.getAppExecutorService().submit {
-            val result = AgentModelOptionsLoader.load(profile, command, arguments, null)
-            ApplicationManager.getApplication().invokeLater {
-                loadModelsButton.isEnabled = true
-                result.fold(
-                    onSuccess = { models ->
-                        setModelOptions(models, selectedModelBeforeLoad)
-                        modelStatusLabel.text = if (models.isEmpty()) {
-                            MyBundle["settings.agent.modelStatus.empty"]
-                        } else {
-                            MyBundle["settings.agent.modelStatus.loaded", models.size]
-                        }
-                    },
-                    onFailure = { exception ->
-                        modelStatusLabel.text = MyBundle[
-                            "settings.agent.modelStatus.failed",
-                            exception.message ?: exception.javaClass.simpleName,
-                        ]
-                    },
-                )
-            }
+        backgroundExecutor.execute {
+            val result = modelOptionsLoader(profile, command, arguments, null)
+            uiDispatcher(
+                Runnable {
+                    if (
+                        requestGeneration != modelLoadGeneration.get() ||
+                        profile != selectedProfile() ||
+                        command != commandOverrideField.text.trim().ifBlank { profile.defaultCommand } ||
+                        arguments != AgentCommandLine.splitArguments(
+                            argumentsOverrideField.text.trim().ifBlank { profile.defaultArguments },
+                        )
+                    ) {
+                        return@Runnable
+                    }
+                    loadModelsButton.isEnabled = true
+                    result.fold(
+                        onSuccess = { models ->
+                            setModelOptions(models, selectedModelBeforeLoad, allowCustomSelection = false)
+                            modelStatusLabel.text = if (models.isEmpty()) {
+                                MyBundle["settings.agent.modelStatus.empty"]
+                            } else {
+                                MyBundle["settings.agent.modelStatus.loaded", models.size]
+                            }
+                        },
+                        onFailure = { exception ->
+                            modelStatusLabel.text = MyBundle[
+                                "settings.agent.modelStatus.failed",
+                                exception.message ?: exception.javaClass.simpleName,
+                            ]
+                        },
+                    )
+                },
+            )
         }
     }
 
