@@ -1,4 +1,4 @@
-package com.github.buyoung.intellijcommitninja.toolWindow
+package com.livteam.commitninja.toolWindow
 
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
@@ -8,8 +8,8 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.content.ContentFactory
-import com.github.buyoung.intellijcommitninja.MyBundle
-import com.github.buyoung.intellijcommitninja.services.MyProjectService
+import com.livteam.commitninja.MyBundle
+import com.livteam.commitninja.services.MyProjectService
 import javax.swing.JButton
 
 

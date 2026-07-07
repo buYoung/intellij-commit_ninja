@@ -1,9 +1,9 @@
-package com.github.buyoung.intellijcommitninja.services
+package com.livteam.commitninja.services
 
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
-import com.github.buyoung.intellijcommitninja.MyBundle
+import com.livteam.commitninja.MyBundle
 
 @Service(Service.Level.PROJECT)
 class MyProjectService(project: Project) {

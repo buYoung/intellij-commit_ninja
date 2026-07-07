@@ -1,6 +1,6 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.github.buyoung.intellijcommitninja</id>
+    <id>com.livteam.commitninja</id>
     <name>intellij-commit_ninja</name>
     <vendor>buyoung</vendor>
     <description><![CDATA[
@@ -13,7 +13,7 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.buyoung.intellijcommitninja.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.buyoung.intellijcommitninja.startup.MyProjectActivity" />
+        <toolWindow factoryClass="com.livteam.commitninja.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
+        <postStartupActivity implementation="com.livteam.commitninja.startup.MyProjectActivity" />
     </extensions>
 </idea-plugin>

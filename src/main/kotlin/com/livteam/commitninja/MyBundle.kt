@@ -1,4 +1,4 @@
-package com.github.buyoung.intellijcommitninja
+package com.livteam.commitninja
 
 import com.intellij.DynamicBundle
 import org.jetbrains.annotations.NonNls

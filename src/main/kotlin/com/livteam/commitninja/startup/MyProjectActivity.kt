@@ -1,4 +1,4 @@
-package com.github.buyoung.intellijcommitninja.startup
+package com.livteam.commitninja.startup
 
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
