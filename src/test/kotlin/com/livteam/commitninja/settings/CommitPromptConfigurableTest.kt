@@ -9,6 +9,7 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import java.awt.Component
 import java.awt.Container
+import javax.swing.ScrollPaneConstants
 
 class CommitPromptConfigurableTest : BasePlatformTestCase() {
     fun testPromptSettingsUseMarkdownAwareEditor() {
@@ -44,7 +45,17 @@ class CommitPromptConfigurableTest : BasePlatformTestCase() {
             )
             assertTrue(
                 "Prompt editor must show the vertical scrollbar.",
-                createdEditor.scrollPane.verticalScrollBarPolicy != javax.swing.ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
+                createdEditor.scrollPane.verticalScrollBarPolicy != ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
+            )
+            assertEquals(
+                "Prompt editor must rely on soft wraps instead of exposing an unwanted horizontal scrollbar.",
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+                createdEditor.scrollPane.horizontalScrollBarPolicy,
+            )
+            assertEquals(
+                "Prompt editor content must follow the active editor color scheme background.",
+                createdEditor.colorsScheme.defaultBackground,
+                createdEditor.contentComponent.background,
             )
             assertFalse(
                 "Prompt editor must be a multiline editor, not a one-line field.",
@@ -54,6 +65,10 @@ class CommitPromptConfigurableTest : BasePlatformTestCase() {
                 "Prompt editor must create the actual EditorEx with project context.",
                 project,
                 createdEditor.project,
+            )
+            assertTrue(
+                "Prompt editor must not keep the previous fixed preferred width.",
+                editor.preferredSize.width != 760,
             )
         } finally {
             EditorFactory.getInstance().releaseEditor(createdEditor)

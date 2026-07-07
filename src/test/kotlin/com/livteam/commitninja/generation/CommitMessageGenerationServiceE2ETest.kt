@@ -6,7 +6,9 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.nio.file.Path
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import kotlin.io.path.exists
+import kotlin.io.path.writeText
 
 class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
     fun testGeneratesCommitMessageThroughOpencodeLocalAcpBoundary() {
@@ -43,6 +45,110 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             model = "haiku",
             expectedMessage = "feat: update app output",
         )
+    }
+
+    fun testClaudeAdapterLaunchFailureReportsUsefulDiagnostic() {
+        val failingClaudeAdapter = Files.createTempFile("fake-claude-agent-acp", ".sh")
+        failingClaudeAdapter.writeText(
+            """
+            #!/bin/sh
+            printf 'claude-agent-acp adapter is not installed\n' >&2
+            exit 127
+            """.trimIndent(),
+        )
+        failingClaudeAdapter.toFile().setExecutable(true)
+        val request = CommitMessageGenerationRequest(
+            profile = AgentProfile.CLAUDE_AGENT_ACP,
+            command = failingClaudeAdapter.toAbsolutePath().toString(),
+            arguments = emptyList(),
+            model = "sonnet",
+            userPrompt = "Write a concise Conventional Commit message.",
+            branchName = "feature/acp-e2e",
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            workingDirectory = System.getProperty("user.dir"),
+        )
+
+        val result = CommitMessageGenerationService(project).generate(request)
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Failure)
+        val diagnostic = (result as CommitMessageGenerationResult.Failure).diagnostic
+        assertEquals(GenerationFailureType.PROTOCOL_FAILED, diagnostic.type)
+        assertTrue(diagnostic.message, "claude-agent-acp adapter is not installed" in diagnostic.message)
+        assertTrue(diagnostic.message, failingClaudeAdapter.fileName.toString() in diagnostic.message)
+    }
+
+    fun testAcpLaunchFailureReportsCommandDiagnostic() {
+        val missingCommand = "/tmp/commit-ninja-missing-acp-${System.nanoTime()}"
+        val request = CommitMessageGenerationRequest(
+            profile = AgentProfile.CODEX_ACP,
+            command = missingCommand,
+            arguments = listOf("--stdio"),
+            model = "gpt-5.4-mini",
+            userPrompt = "Write a concise Conventional Commit message.",
+            branchName = "feature/acp-e2e",
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            workingDirectory = System.getProperty("user.dir"),
+        )
+
+        val result = CommitMessageGenerationService(project).generate(request)
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Failure)
+        val diagnostic = (result as CommitMessageGenerationResult.Failure).diagnostic
+        assertEquals(GenerationFailureType.LAUNCH_FAILED, diagnostic.type)
+        assertTrue(diagnostic.message, missingCommand in diagnostic.message)
+        assertTrue(diagnostic.message, "--stdio" in diagnostic.message)
+    }
+
+    fun testAcpParseFailureReportsBoundedRawOutputDiagnostic() {
+        val rawOutput = "I inspected the diff but cannot produce a conventional commit.\n" +
+            "Reason: the response contains analysis instead of a final message.\n" +
+            "diagnostic-marker-${"x".repeat(5_000)}"
+        val request = CommitMessageGenerationRequest(
+            profile = AgentProfile.CODEX_ACP,
+            command = javaExecutable(),
+            arguments = listOf(
+                "-cp",
+                System.getProperty("java.class.path"),
+                FakeCommitMessageAcpServer::class.java.name,
+                "content-length",
+                "gpt-5.4-mini",
+                rawOutput,
+            ),
+            model = "gpt-5.4-mini",
+            userPrompt = "Write a concise Conventional Commit message.",
+            branchName = "feature/acp-e2e",
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            workingDirectory = System.getProperty("user.dir"),
+        )
+
+        val result = CommitMessageGenerationService(project).generate(request)
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Failure)
+        val diagnostic = (result as CommitMessageGenerationResult.Failure).diagnostic
+        assertEquals(GenerationFailureType.PARSE_FAILED, diagnostic.type)
+        assertTrue(diagnostic.message, "outputChars=" in diagnostic.message)
+        assertTrue(diagnostic.message, "rawOutputPreview=" in diagnostic.message)
+        assertTrue(diagnostic.message, "cannot produce a conventional commit" in diagnostic.message)
+        assertTrue(diagnostic.message, "diagnostic-marker-" in diagnostic.message)
+        assertTrue(diagnostic.message, diagnostic.message.length < 2_500)
     }
 
     private fun assertGeneratesCommitMessageWithModel(

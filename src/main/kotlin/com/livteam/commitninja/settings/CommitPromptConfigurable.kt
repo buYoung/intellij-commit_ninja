@@ -14,6 +14,7 @@ import com.intellij.ui.EditorTextField
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
 import com.livteam.commitninja.MyBundle
+import java.awt.Dimension
 import javax.swing.JComponent
 import javax.swing.ScrollPaneConstants
 
@@ -28,7 +29,7 @@ class CommitPromptConfigurable : SearchableConfigurable {
         false,
         false,
     ).apply {
-        setPreferredSize(java.awt.Dimension(760, 360))
+        minimumSize = Dimension(0, 360)
     }
 
     override fun getDisplayName(): String = MyBundle["settings.prompt.displayName"]
@@ -86,7 +87,9 @@ internal class CommitPromptMarkdownEditorField(
         editor.highlighter = EditorHighlighterFactory.getInstance().createEditorHighlighter(editorProject, fileType)
         editor.isOneLineMode = false
         editor.scrollPane.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
-        editor.scrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+        editor.scrollPane.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        editor.setBackgroundColor(editor.colorsScheme.defaultBackground)
+        editor.contentComponent.background = editor.colorsScheme.defaultBackground
         editor.settings.applyPromptEditorSettings()
         return editor
     }

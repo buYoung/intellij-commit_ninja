@@ -140,8 +140,8 @@ class AcpModelOptionsLoaderTest {
         fakeCodex.writeText(
             """
             #!/bin/sh
-            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ]; then
-              printf '{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5"},{"slug":"gpt-5.4","display_name":"GPT-5.4"},{"slug":"gpt-5.4-mini","display_name":"GPT-5.4-Mini"}]}\n'
+            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ] && [ "${'$'}3" = "--bundled" ]; then
+              printf '{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5"},{"slug":"gpt-5.4","display_name":"GPT-5.4"},{"slug":"gpt-5.4-mini","display_name":"GPT-5.4-Mini"},{"slug":"codex-auto-review","display_name":"Auto Review"}]}\n'
               exit 0
             fi
             exit 1
@@ -164,11 +164,107 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
+    fun `codex model loader consumes large stdout while process is still running`() {
+        val fakeCodex = Files.createTempFile("fake-codex-large-stdout", ".sh")
+        fakeCodex.writeText(
+            """
+            #!/bin/sh
+            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ] && [ "${'$'}3" = "--bundled" ]; then
+              printf '{"models":['
+              index=0
+              while [ "${'$'}index" -lt 5000 ]; do
+                if [ "${'$'}index" -gt 0 ]; then
+                  printf ','
+                fi
+                printf '{"slug":"padding-%s","display_name":"%096d"}' "${'$'}index" "${'$'}index"
+                index=$((index + 1))
+              done
+              printf ',{"slug":"gpt-5.5"},{"slug":"gpt-5.4"},{"slug":"gpt-5.4-mini"},{"slug":"codex-auto-review"}]}\n'
+              exit 0
+            fi
+            exit 1
+            """.trimIndent(),
+        )
+        fakeCodex.toFile().setExecutable(true)
+
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.CODEX_ACP,
+            command = fakeCodex.toAbsolutePath().toString(),
+            arguments = emptyList(),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"), result.getOrThrow())
+    }
+
+    @Test
     fun `codex default adapter command maps to direct codex discovery command`() {
         assertEquals(
             "codex",
             AgentModelOptionsLoader.codexModelDiscoveryCommand(AgentProfile.CODEX_ACP.defaultCommand),
         )
+    }
+
+    @Test
+    fun `codex adapter path maps to sibling direct codex discovery command`() {
+        val fakeBinDirectory = Files.createTempDirectory("fake-codex-bin")
+        val fakeCodex = fakeBinDirectory.resolve("codex")
+        val fakeCodexAcp = fakeBinDirectory.resolve("codex-acp")
+        fakeCodex.writeText(
+            """
+            #!/bin/sh
+            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ] && [ "${'$'}3" = "--bundled" ]; then
+              printf '{"models":[{"slug":"gpt-5.5"},{"slug":"gpt-5.4"},{"slug":"gpt-5.4-mini"},{"slug":"codex-auto-review"}]}\n'
+              exit 0
+            fi
+            exit 1
+            """.trimIndent(),
+        )
+        fakeCodexAcp.writeText(
+            """
+            #!/bin/sh
+            printf 'codex-acp must not be used for model discovery\n' >&2
+            exit 127
+            """.trimIndent(),
+        )
+        fakeCodex.toFile().setExecutable(true)
+        fakeCodexAcp.toFile().setExecutable(true)
+
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.CODEX_ACP,
+            command = fakeCodexAcp.toAbsolutePath().toString(),
+            arguments = emptyList(),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
+        assertEquals(listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"), result.getOrThrow())
+    }
+
+    @Test
+    fun `model command failure reports command and stderr diagnostic`() {
+        val failingCommand = Files.createTempFile("fake-model-list-failure", ".sh")
+        failingCommand.writeText(
+            """
+            #!/bin/sh
+            printf 'adapter missing: install cli first\n' >&2
+            exit 127
+            """.trimIndent(),
+        )
+        failingCommand.toFile().setExecutable(true)
+
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.OPENCODE,
+            command = failingCommand.toAbsolutePath().toString(),
+            arguments = listOf("acp"),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.isFailure)
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue(message, failingCommand.fileName.toString() in message)
+        assertTrue(message, "adapter missing" in message)
     }
 
     @Test

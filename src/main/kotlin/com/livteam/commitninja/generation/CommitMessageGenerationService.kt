@@ -1,6 +1,7 @@
 package com.livteam.commitninja.generation
 
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.livteam.commitninja.acp.AcpClient
 import com.livteam.commitninja.settings.AgentCommandLine
@@ -10,17 +11,33 @@ import com.livteam.commitninja.settings.CommitGenerationSettings
 class CommitMessageGenerationService(private val project: Project) {
     fun generate(request: CommitMessageGenerationRequest): CommitMessageGenerationResult {
         if (request.changes.isEmpty()) {
+            LOG.warn("Commit message generation rejected: no checked changes")
             return CommitMessageGenerationResult.Failure(
                 GenerationDiagnostic(GenerationFailureType.NO_CHECKED_CHANGES, "No checked changes were supplied."),
             )
         }
+        LOG.info(
+            "Starting commit message generation: profile=${request.profile.name}, model=${request.model.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
+        )
         val prompt = buildPrompt(request)
-        return AcpClient(project).generate(request, prompt)
+        LOG.info(
+            "Built commit generation prompt: promptChars=${prompt.length}, changePaths=${request.changes.joinToString(",") { it.path }}",
+        )
+        LOG.debug("Commit generation full prompt:\n$prompt")
+        val result = AcpClient(project).generate(request, prompt)
+        when (result) {
+            is CommitMessageGenerationResult.Success -> LOG.info("Commit message generation succeeded: messageChars=${result.message.length}")
+            is CommitMessageGenerationResult.Failure -> LOG.warn(
+                "Commit message generation failed: type=${result.diagnostic.type}, diagnostic=${result.diagnostic.message}, ${failureInputDiagnostic(request, prompt)}",
+            )
+        }
+        return result
     }
 
     fun requestFromSettings(changes: List<CheckedChangeContext>, branchName: String?): CommitMessageGenerationResult? {
         val settings = CommitGenerationSettings.getInstance()
         if (!settings.isConfigured()) {
+            LOG.warn("Commit message generation settings missing")
             return CommitMessageGenerationResult.Failure(
                 GenerationDiagnostic(GenerationFailureType.SETTINGS_MISSING, "ACP agent settings are incomplete."),
             )
@@ -34,6 +51,9 @@ class CommitMessageGenerationService(private val project: Project) {
             branchName = branchName,
             changes = changes,
             workingDirectory = project.basePath,
+        )
+        LOG.info(
+            "Created commit generation request from settings: profile=${request.profile.name}, model=${request.model.orEmpty()}, branch=${branchName.orEmpty()}, checkedChangeCount=${changes.size}",
         )
         return generate(request)
     }
@@ -78,8 +98,36 @@ class CommitMessageGenerationService(private val project: Project) {
         return take(MAX_CHANGE_DETAIL_CHARS) + "\n<change detail truncated at $MAX_CHANGE_DETAIL_CHARS chars>"
     }
 
+    private fun failureInputDiagnostic(request: CommitMessageGenerationRequest, prompt: String): String = buildString {
+        append("profile=")
+        append(request.profile.name)
+        append(", model=")
+        append(request.model.orEmpty())
+        append(", branch=")
+        append(request.branchName.orEmpty())
+        append(", checkedChangeCount=")
+        append(request.changes.size)
+        append(", promptChars=")
+        append(prompt.length)
+        append(", changePaths=")
+        append(request.changes.joinToString(",") { it.path }.take(MAX_FAILURE_DIAGNOSTIC_CHARS))
+        append(", promptPreview=")
+        append(prompt.boundedFailurePreview())
+    }
+
+    private fun String.boundedFailurePreview(): String {
+        val normalized = replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .trim()
+        val preview = normalized.take(MAX_FAILURE_DIAGNOSTIC_CHARS)
+        val suffix = if (normalized.length > MAX_FAILURE_DIAGNOSTIC_CHARS) "...<truncated>" else ""
+        return preview + suffix
+    }
+
     private companion object {
+        val LOG = Logger.getInstance(CommitMessageGenerationService::class.java)
         const val MAX_COMMIT_PROMPT_CHARS = 80_000
         const val MAX_CHANGE_DETAIL_CHARS = 12_000
+        const val MAX_FAILURE_DIAGNOSTIC_CHARS = 2_000
     }
 }

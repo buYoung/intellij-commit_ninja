@@ -1,6 +1,7 @@
 package com.livteam.commitninja.ui
 
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.livteam.commitninja.generation.CommitMessageGenerationResult
@@ -12,6 +13,7 @@ class CommitMessageApplier {
     fun apply(project: Project, commitMessageControl: Any, result: CommitMessageGenerationResult) {
         when (result) {
             is CommitMessageGenerationResult.Failure -> {
+                LOG.warn("Generated commit message was not applied: type=${result.diagnostic.type}, diagnostic=${result.diagnostic.message}")
                 CommitGenerationNotifications.notifyFailure(project, result.diagnostic.type)
             }
             is CommitMessageGenerationResult.Success -> {
@@ -40,9 +42,18 @@ class CommitMessageApplier {
                 didSetText = accessor.setText(message)
             })
             didSetText
+        }.onFailure { exception ->
+            LOG.warn("Failed to apply generated commit message", exception)
         }.getOrDefault(false)
         if (!didReplace) {
+            LOG.warn("Generated commit message apply failed: setText returned false")
             CommitGenerationNotifications.notifyFailure(project, GenerationFailureType.APPLY_FAILED)
+        } else {
+            LOG.info("Generated commit message applied: messageChars=${message.length}")
         }
+    }
+
+    private companion object {
+        val LOG = Logger.getInstance(CommitMessageApplier::class.java)
     }
 }

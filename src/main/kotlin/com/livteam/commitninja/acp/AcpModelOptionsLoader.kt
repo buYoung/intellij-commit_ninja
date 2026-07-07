@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -21,30 +22,43 @@ object AcpModelOptionsLoader {
         workingDirectory: String?,
         transport: Transport = Transport.CONTENT_LENGTH,
     ): Result<List<String>> {
+        LOG.info(
+            "Starting ACP config model load: command=${formatCommand(command, arguments)}, workingDirectory=${workingDirectory.orEmpty()}, transport=$transport",
+        )
         val process = try {
             ProcessBuilder(listOf(command) + arguments)
                 .directory(workingDirectory?.let(::File))
                 .start()
         } catch (exception: Exception) {
+            LOG.warn("Could not start ACP config model load: command=${formatCommand(command, arguments)}", exception)
             return Result.failure(exception)
         }
 
         val executor = AppExecutorUtil.getAppExecutorService()
-        return try {
-            executor.submit {
-                process.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
-                    lines.forEach { /* Drain stderr without surfacing user environment details. */ }
-                }
+        val stderrFuture = executor.submit<String> {
+            process.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
+                lines.joinToString("\n").take(MAX_DIAGNOSTIC_CHARS)
             }
+        }
+        return try {
             val options = executor.submit<List<String>> {
                 runProtocol(process, workingDirectory, transport)
             }.get(15, TimeUnit.SECONDS)
+            LOG.info("Loaded ACP config model options: command=${formatCommand(command, arguments)}, count=${options.size}")
             Result.success(options)
         } catch (exception: TimeoutException) {
             process.destroyForcibly()
+            LOG.warn(
+                "ACP config model load timed out: command=${formatCommand(command, arguments)}, stderr=${stderrFuture.diagnosticStderr()}",
+            )
             Result.failure(exception)
         } catch (exception: Exception) {
-            Result.failure(exception.cause ?: exception)
+            val cause = exception.cause ?: exception
+            LOG.warn(
+                "ACP config model load failed: command=${formatCommand(command, arguments)}, exitCode=${exitCodeIfAvailable(process)}, stderr=${stderrFuture.diagnosticStderr()}",
+                cause,
+            )
+            Result.failure(cause)
         } finally {
             process.destroy()
             process.waitFor(1, TimeUnit.SECONDS)
@@ -197,8 +211,22 @@ object AcpModelOptionsLoader {
         return emptyList()
     }
 
+    private fun java.util.concurrent.Future<String>.diagnosticStderr(): String =
+        runCatching { get(1, TimeUnit.SECONDS).trim().take(MAX_DIAGNOSTIC_CHARS) }.getOrDefault("")
+
+    private fun exitCodeIfAvailable(process: Process): String =
+        runCatching {
+            if (process.isAlive) "running" else process.exitValue().toString()
+        }.getOrDefault("unknown")
+
+    private fun formatCommand(command: String, arguments: List<String>): String =
+        (listOf(command) + arguments).joinToString(" ")
+
     enum class Transport {
         CONTENT_LENGTH,
         NEWLINE_JSON,
     }
+
+    private val LOG = Logger.getInstance(AcpModelOptionsLoader::class.java)
+    private const val MAX_DIAGNOSTIC_CHARS = 1_000
 }

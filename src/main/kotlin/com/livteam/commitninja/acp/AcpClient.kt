@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.livteam.commitninja.generation.CommitMessageGenerationRequest
@@ -23,35 +24,76 @@ class AcpClient(private val project: Project) {
     private val gson = Gson()
 
     fun generate(request: CommitMessageGenerationRequest, prompt: String): CommitMessageGenerationResult {
+        val command = listOf(request.command) + request.arguments
+        val transport = transportFor(request.profile)
+        LOG.info(
+            "Starting ACP commit generation: profile=${request.profile.name}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, transport=$transport, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
+        )
+        LOG.debug("ACP commit generation prompt payload:\n$prompt")
         val process = try {
-            val command = listOf(request.command) + request.arguments
             ProcessBuilder(command)
                 .directory(request.workingDirectory?.let(::File))
                 .start()
         } catch (exception: Exception) {
-            return failure(GenerationFailureType.LAUNCH_FAILED, exception.message ?: "Could not launch ACP agent.")
+            LOG.warn(
+                "Could not start ACP agent: command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, transport=$transport",
+                exception,
+            )
+            return failure(
+                GenerationFailureType.LAUNCH_FAILED,
+                "Could not launch ACP agent: ${formatCommand(command)}. ${exception.message ?: exception.javaClass.simpleName}",
+            )
         }
 
         val executor = AppExecutorUtil.getAppExecutorService()
-        executor.submit {
+        val stderrFuture = executor.submit<String> {
             process.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
-                lines.forEach { /* Drain stderr without surfacing diff-adjacent content. */ }
+                lines.takeWhile { true }.joinToString("\n").take(MAX_DIAGNOSTIC_CHARS)
             }
         }
         return try {
             executor.submit<CommitMessageGenerationResult> { runProtocol(process, request, prompt) }.get(60, TimeUnit.SECONDS)
         } catch (exception: TimeoutException) {
             process.destroyForcibly()
-            failure(GenerationFailureType.TIMEOUT, "ACP agent did not finish before the timeout.")
+            LOG.warn("ACP commit generation timed out: ${diagnosticMessage("timeout", command, process, stderrFuture)}")
+            failure(
+                GenerationFailureType.TIMEOUT,
+                diagnosticMessage("ACP agent did not finish before the timeout.", command, process, stderrFuture),
+            )
         } catch (exception: InterruptedException) {
             process.destroyForcibly()
             Thread.currentThread().interrupt()
-            failure(GenerationFailureType.CANCELLED, "Commit message generation was cancelled.")
+            LOG.warn("ACP commit generation interrupted: ${diagnosticMessage("cancelled", command, process, stderrFuture)}")
+            failure(
+                GenerationFailureType.CANCELLED,
+                diagnosticMessage("Commit message generation was cancelled.", command, process, stderrFuture),
+            )
         } catch (exception: Exception) {
             process.destroyForcibly()
-            failure(GenerationFailureType.PROTOCOL_FAILED, exception.cause?.message ?: exception.message.orEmpty())
+            LOG.warn(
+                "ACP commit generation failed: ${
+                    diagnosticMessage(
+                        exception.cause?.message ?: exception.message ?: "ACP protocol failed.",
+                        command,
+                        process,
+                        stderrFuture,
+                    )
+                }",
+                exception,
+            )
+            failure(
+                GenerationFailureType.PROTOCOL_FAILED,
+                diagnosticMessage(
+                    exception.cause?.message ?: exception.message ?: "ACP protocol failed.",
+                    command,
+                    process,
+                    stderrFuture,
+                ),
+            )
         } finally {
             process.destroy()
+            process.waitFor(1, TimeUnit.SECONDS)
+            if (process.isAlive) process.destroyForcibly()
         }
     }
 
@@ -63,6 +105,7 @@ class AcpClient(private val project: Project) {
         val input = BufferedInputStream(process.inputStream)
         val output = BufferedOutputStream(process.outputStream)
         val transport = transportFor(request.profile)
+        LOG.info("Running ACP protocol: profile=${request.profile.name}, transport=$transport")
         send(
             output,
             transport,
@@ -75,12 +118,14 @@ class AcpClient(private val project: Project) {
             ),
         )
         val initializeResponse = readUntilResponse(input, 1)
+        LOG.debug("ACP initialize response: $initializeResponse")
         val sessionParams = mutableMapOf<String, Any?>(
             "cwd" to (request.workingDirectory ?: project.basePath ?: ""),
             "mcpServers" to emptyList<Any>(),
         )
         send(output, transport, 2, "session/new", sessionParams)
         val sessionResponse = readUntilResponse(input, 2)
+        LOG.debug("ACP session response: $sessionResponse")
         val sessionId = sessionResponse["result"]?.asJsonObject?.get("sessionId")?.asString
             ?: sessionResponse["result"]?.asJsonObject?.get("id")?.asString
             ?: "commit-ninja"
@@ -100,6 +145,7 @@ class AcpClient(private val project: Project) {
                 ),
             )
             readUntilResponse(input, 3)
+            LOG.info("Applied ACP model selection: profile=${request.profile.name}, model=${request.model}, configId=$modelConfigOption")
         }
         send(
             output,
@@ -115,6 +161,7 @@ class AcpClient(private val project: Project) {
         val transcript = StringBuilder(MAX_ACP_TRANSCRIPT_CHARS.coerceAtMost(16_384))
         while (process.isAlive) {
             val message = readMessage(input) ?: break
+            LOG.debug("ACP raw incoming message: $message")
             if (message["id"]?.asInt == 4) {
                 collectText(message["result"]?.asJsonObject, transcript)
                 break
@@ -122,16 +169,23 @@ class AcpClient(private val project: Project) {
             collectText(message, transcript)
         }
         process.destroy()
-        val parsed = CommitMessageOutputParser.parse(transcript.toString())
+        val rawOutput = transcript.toString()
+        LOG.debug("ACP collected output:\n$rawOutput")
+        val parsed = CommitMessageOutputParser.parse(rawOutput)
         return if (parsed == null) {
-            failure(GenerationFailureType.PARSE_FAILED, "ACP response did not contain a usable commit message.")
+            val diagnostic = parseFailureDiagnostic(rawOutput)
+            LOG.warn("Failed to parse ACP commit generation output: $diagnostic")
+            failure(GenerationFailureType.PARSE_FAILED, diagnostic)
         } else {
+            LOG.info("Parsed ACP commit generation output: messageChars=${parsed.length}")
+            LOG.debug("ACP final commit message:\n$parsed")
             CommitMessageGenerationResult.Success(parsed)
         }
     }
 
     private fun send(output: BufferedOutputStream, transport: Transport, id: Int, method: String, params: Any?) {
         val json = gson.toJson(mapOf("jsonrpc" to "2.0", "id" to id, "method" to method, "params" to params))
+        LOG.debug("ACP outgoing message: $json")
         val bytes = json.toByteArray(StandardCharsets.UTF_8)
         when (transport) {
             Transport.CONTENT_LENGTH -> {
@@ -158,6 +212,7 @@ class AcpClient(private val project: Project) {
     private fun readUntilResponse(input: BufferedInputStream, id: Int): JsonObject {
         while (true) {
             val message = readMessage(input) ?: error("ACP agent closed the stream.")
+            LOG.debug("ACP raw incoming message: $message")
             if (message["id"]?.asInt == id) {
                 if (message.has("error")) error("ACP error: ${message["error"]}")
                 return message
@@ -257,8 +312,56 @@ class AcpClient(private val project: Project) {
     private fun failure(type: GenerationFailureType, message: String): CommitMessageGenerationResult.Failure =
         CommitMessageGenerationResult.Failure(GenerationDiagnostic(type, message))
 
+    private fun parseFailureDiagnostic(rawOutput: String): String = buildString {
+        append("ACP response did not contain a usable commit message.")
+        append(" outputChars=")
+        append(rawOutput.length)
+        append(", rawOutputPreview=")
+        append(boundedPreview(rawOutput))
+    }
+
+    private fun diagnosticMessage(
+        reason: String,
+        command: List<String>,
+        process: Process,
+        stderrFuture: java.util.concurrent.Future<String>,
+    ): String {
+        val stderr = runCatching {
+            stderrFuture.get(1, TimeUnit.SECONDS)
+        }.getOrDefault("").trim()
+        return buildString {
+            append(reason)
+            append(" Command: ")
+            append(formatCommand(command))
+            runCatching {
+                if (!process.isAlive) {
+                    append(". Exit code: ")
+                    append(process.exitValue())
+                }
+            }
+            if (stderr.isNotBlank()) {
+                append(". stderr: ")
+                append(stderr.take(MAX_DIAGNOSTIC_CHARS))
+            }
+        }
+    }
+
+    private fun boundedPreview(value: String): String {
+        val normalized = value
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .trim()
+        val preview = normalized.take(MAX_DIAGNOSTIC_CHARS)
+        val suffix = if (normalized.length > MAX_DIAGNOSTIC_CHARS) "...<truncated>" else ""
+        return preview + suffix
+    }
+
+    private fun formatCommand(command: List<String>): String = command.joinToString(" ")
+
     private companion object {
+        val LOG = Logger.getInstance(AcpClient::class.java)
         const val MAX_ACP_TRANSCRIPT_CHARS = 120_000
+        const val MAX_DIAGNOSTIC_CHARS = 2_000
     }
 
     private enum class Transport {
