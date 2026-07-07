@@ -10,7 +10,7 @@ import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.livteam.commitninja.MyBundle
-import com.livteam.commitninja.acp.AcpModelOptionsLoader
+import com.livteam.commitninja.acp.AgentModelOptionsLoader
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JComponent
@@ -167,7 +167,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         loadModelsButton.isEnabled = false
         modelStatusLabel.text = MyBundle["settings.agent.modelStatus.loading"]
         AppExecutorUtil.getAppExecutorService().submit {
-            val result = AcpModelOptionsLoader.load(command, arguments, null)
+            val result = AgentModelOptionsLoader.load(profile, command, arguments, null)
             ApplicationManager.getApplication().invokeLater {
                 loadModelsButton.isEnabled = true
                 result.fold(

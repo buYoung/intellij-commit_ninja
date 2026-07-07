@@ -11,10 +11,22 @@ import com.livteam.commitninja.generation.CheckedChangeContext
 
 class CheckedCommitChangesProvider {
     fun hasCheckedChanges(event: AnActionEvent): Boolean =
-        !event.getData(VcsDataKeys.CHANGES).isNullOrEmpty()
+        hasCheckedChangesFromSources(
+            actionChanges = event.getData(VcsDataKeys.CHANGES),
+            includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
+        )
 
-    fun collect(event: AnActionEvent): List<CheckedChangeContext> {
-        val changes = event.getData(VcsDataKeys.CHANGES)
+    fun collect(event: AnActionEvent): List<CheckedChangeContext> =
+        collectFromSources(
+            actionChanges = event.getData(VcsDataKeys.CHANGES),
+            includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
+        )
+
+    fun collectFromSources(
+        actionChanges: Array<Change>?,
+        includedChanges: List<Change>?,
+    ): List<CheckedChangeContext> {
+        val changes = selectedChanges(actionChanges, includedChanges)
         if (!changes.isNullOrEmpty()) {
             val contexts = mutableListOf<CheckedChangeContext>()
             var remainingDetailChars = MAX_COLLECTED_CHANGE_DETAIL_CHARS
@@ -31,6 +43,16 @@ class CheckedCommitChangesProvider {
         }
         return emptyList()
     }
+
+    fun hasCheckedChangesFromSources(
+        actionChanges: Array<Change>?,
+        includedChanges: List<Change>?,
+    ): Boolean = !selectedChanges(actionChanges, includedChanges).isNullOrEmpty()
+
+    private fun selectedChanges(
+        actionChanges: Array<Change>?,
+        includedChanges: List<Change>?,
+    ): List<Change>? = includedChanges ?: actionChanges?.toList()
 
     fun currentBranchName(project: Project): String? =
         currentGitBranchName(project)
