@@ -3,7 +3,6 @@ package com.livteam.commitninja.acp
 import com.livteam.commitninja.settings.AgentCommandLine
 import com.livteam.commitninja.settings.AgentProfile
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.BufferedInputStream
@@ -74,14 +73,14 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
-    fun `codex profile uses ACP adapter command defaults without user command override`() {
-        assertEquals("codex-acp", AgentProfile.CODEX_ACP.defaultCommand)
+    fun `codex profile has no unconfirmed ACP command default`() {
+        assertEquals("", AgentProfile.CODEX_ACP.defaultCommand)
         assertEquals(emptyList<String>(), AgentCommandLine.splitArguments(AgentProfile.CODEX_ACP.defaultArguments))
     }
 
     @Test
-    fun `claude profile uses ACP adapter command defaults without user command override`() {
-        assertEquals("claude-agent-acp", AgentProfile.CLAUDE_AGENT_ACP.defaultCommand)
+    fun `claude profile has no unconfirmed ACP command default`() {
+        assertEquals("", AgentProfile.CLAUDE_AGENT_ACP.defaultCommand)
         assertEquals(emptyList<String>(), AgentCommandLine.splitArguments(AgentProfile.CLAUDE_AGENT_ACP.defaultArguments))
     }
 
@@ -135,111 +134,52 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
-    fun `codex model loader reads debug models json catalog`() {
-        val fakeCodex = Files.createTempFile("fake-codex", ".sh")
-        fakeCodex.writeText(
-            """
-            #!/bin/sh
-            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ] && [ "${'$'}3" = "--bundled" ]; then
-              printf '{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5"},{"slug":"gpt-5.4","display_name":"GPT-5.4"},{"slug":"gpt-5.4-mini","display_name":"GPT-5.4-Mini"},{"slug":"codex-auto-review","display_name":"Auto Review"}]}\n'
-              exit 0
-            fi
-            exit 1
-            """.trimIndent(),
-        )
-        fakeCodex.toFile().setExecutable(true)
-
+    fun `codex model loader uses explicit ACP command configuration`() {
+        val javaExecutable = javaExecutable()
+        val classpath = System.getProperty("java.class.path")
         val result = AgentModelOptionsLoader.load(
             profile = AgentProfile.CODEX_ACP,
-            command = fakeCodex.toAbsolutePath().toString(),
-            arguments = emptyList(),
+            command = javaExecutable,
+            arguments = listOf("-cp", classpath, FakeAcpServer::class.java.name),
             workingDirectory = null,
         )
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
         assertEquals(
-            listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"),
+            listOf("openai/gpt-5.1", "anthropic/claude-sonnet-4-5"),
             result.getOrThrow(),
         )
     }
 
     @Test
-    fun `codex model loader consumes large stdout while process is still running`() {
-        val fakeCodex = Files.createTempFile("fake-codex-large-stdout", ".sh")
-        fakeCodex.writeText(
-            """
-            #!/bin/sh
-            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ] && [ "${'$'}3" = "--bundled" ]; then
-              printf '{"models":['
-              index=0
-              while [ "${'$'}index" -lt 5000 ]; do
-                if [ "${'$'}index" -gt 0 ]; then
-                  printf ','
-                fi
-                printf '{"slug":"padding-%s","display_name":"%096d"}' "${'$'}index" "${'$'}index"
-                index=$((index + 1))
-              done
-              printf ',{"slug":"gpt-5.5"},{"slug":"gpt-5.4"},{"slug":"gpt-5.4-mini"},{"slug":"codex-auto-review"}]}\n'
-              exit 0
-            fi
-            exit 1
-            """.trimIndent(),
-        )
-        fakeCodex.toFile().setExecutable(true)
-
+    fun `claude model loader uses explicit ACP command configuration`() {
+        val javaExecutable = javaExecutable()
+        val classpath = System.getProperty("java.class.path")
         val result = AgentModelOptionsLoader.load(
-            profile = AgentProfile.CODEX_ACP,
-            command = fakeCodex.toAbsolutePath().toString(),
-            arguments = emptyList(),
+            profile = AgentProfile.CLAUDE_AGENT_ACP,
+            command = javaExecutable,
+            arguments = listOf("-cp", classpath, FakeAcpServer::class.java.name),
             workingDirectory = null,
         )
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
-        assertEquals(listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"), result.getOrThrow())
-    }
-
-    @Test
-    fun `codex default adapter command maps to direct codex discovery command`() {
         assertEquals(
-            "codex",
-            AgentModelOptionsLoader.codexModelDiscoveryCommand(AgentProfile.CODEX_ACP.defaultCommand),
+            listOf("openai/gpt-5.1", "anthropic/claude-sonnet-4-5"),
+            result.getOrThrow(),
         )
     }
 
     @Test
-    fun `codex adapter path maps to sibling direct codex discovery command`() {
-        val fakeBinDirectory = Files.createTempDirectory("fake-codex-bin")
-        val fakeCodex = fakeBinDirectory.resolve("codex")
-        val fakeCodexAcp = fakeBinDirectory.resolve("codex-acp")
-        fakeCodex.writeText(
-            """
-            #!/bin/sh
-            if [ "${'$'}1" = "debug" ] && [ "${'$'}2" = "models" ] && [ "${'$'}3" = "--bundled" ]; then
-              printf '{"models":[{"slug":"gpt-5.5"},{"slug":"gpt-5.4"},{"slug":"gpt-5.4-mini"},{"slug":"codex-auto-review"}]}\n'
-              exit 0
-            fi
-            exit 1
-            """.trimIndent(),
-        )
-        fakeCodexAcp.writeText(
-            """
-            #!/bin/sh
-            printf 'codex-acp must not be used for model discovery\n' >&2
-            exit 127
-            """.trimIndent(),
-        )
-        fakeCodex.toFile().setExecutable(true)
-        fakeCodexAcp.toFile().setExecutable(true)
-
+    fun `codex model loader requires explicit ACP command configuration`() {
         val result = AgentModelOptionsLoader.load(
             profile = AgentProfile.CODEX_ACP,
-            command = fakeCodexAcp.toAbsolutePath().toString(),
+            command = AgentProfile.CODEX_ACP.defaultCommand,
             arguments = emptyList(),
             workingDirectory = null,
         )
 
-        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
-        assertEquals(listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"), result.getOrThrow())
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty(), "Explicit ACP command configuration is required" in result.exceptionOrNull()?.message.orEmpty())
     }
 
     @Test
@@ -268,22 +208,16 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
-    fun `claude model loader returns useful fallback choices only`() {
+    fun `claude model loader requires explicit ACP command configuration`() {
         val result = AgentModelOptionsLoader.load(
             profile = AgentProfile.CLAUDE_AGENT_ACP,
-            command = "unused-claude-agent-acp",
+            command = AgentProfile.CLAUDE_AGENT_ACP.defaultCommand,
             arguments = emptyList(),
             workingDirectory = null,
         )
 
-        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
-        assertEquals(
-            listOf("default", "opus", "sonnet", "haiku"),
-            result.getOrThrow().also { models ->
-                assertFalse(models.contains("fable"))
-                assertFalse(models.contains("fable5"))
-            },
-        )
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty(), "Explicit ACP command configuration is required" in result.exceptionOrNull()?.message.orEmpty())
     }
 
     private fun javaExecutable(): String {

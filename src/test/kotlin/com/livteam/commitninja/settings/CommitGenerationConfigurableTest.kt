@@ -2,7 +2,6 @@ package com.livteam.commitninja.settings
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.ui.UIUtil
-import com.livteam.commitninja.acp.AgentModelOptionsLoader
 import java.awt.Component
 import java.awt.Container
 import java.util.ArrayDeque
@@ -66,6 +65,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.OPENCODE.name
         state.model = "ollama-cloud/deepseek-v4-pro"
+        state.command = "custom-codex-acp"
 
         val configurable = testConfigurable { profile, _, _, _ ->
             Result.success(
@@ -91,6 +91,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
     fun testModelSelectorIsSearchableEditableComboBox() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.CODEX_ACP.name
+        state.command = "custom-codex-acp"
 
         val configurable = testConfigurable { profile, _, _, _ ->
             assertEquals(AgentProfile.CODEX_ACP, profile)
@@ -114,6 +115,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
     fun testModelSelectorFiltersLargeLoadedListAndHidesNonMatches() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.CODEX_ACP.name
+        state.command = "custom-codex-acp"
 
         val loadedModels = (1..40).map { modelNumber -> "local-model-$modelNumber" } + listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
         val configurable = testConfigurable { _, _, _, _ -> Result.success(loadedModels) }
@@ -134,6 +136,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
     fun testModelSelectorRestoresLoadedListAfterSelectingFilteredItem() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.CODEX_ACP.name
+        state.command = "custom-codex-acp"
 
         val configurable = testConfigurable { _, _, _, _ ->
             Result.success(listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"))
@@ -158,19 +161,18 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         configurable.disposeUIResources()
     }
 
-    fun testCodexSettingsPathLoadsModelsWhenStoredCommandIsAcpAdapterPath() {
+    fun testCodexSettingsPathLoadsModelsWhenStoredCommandIsExplicitAcpCommand() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.CODEX_ACP.name
-        state.command = "/opt/commit-ninja/bin/codex-acp"
+        state.command = "/opt/commit-ninja/bin/custom-codex-acp"
 
         val configurable = testConfigurable { profile, command, _, _ ->
             assertEquals(AgentProfile.CODEX_ACP, profile)
-            assertEquals("/opt/commit-ninja/bin/codex-acp", command)
-            val discoveryCommand = AgentModelOptionsLoader.codexModelDiscoveryCommand(command)
-            if (discoveryCommand == "/opt/commit-ninja/bin/codex") {
+            assertEquals("/opt/commit-ninja/bin/custom-codex-acp", command)
+            if (command == "/opt/commit-ninja/bin/custom-codex-acp") {
                 Result.success(listOf("gpt-5.5", "gpt-5.4", "gpt-5.4-mini"))
             } else {
-                Result.failure(IllegalStateException("unexpected discovery command: $discoveryCommand"))
+                Result.failure(IllegalStateException("unexpected ACP command: $command"))
             }
         }
         val component = configurable.createComponent()
@@ -192,6 +194,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.OPENCODE.name
         state.model = "ollama-cloud/deepseek-v4-pro"
+        state.command = "custom-codex-acp"
 
         val configurable = testConfigurable { profile, _, _, _ ->
             Result.success(
@@ -221,6 +224,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.OPENCODE.name
         state.model = "ollama-cloud/deepseek-v4-pro"
+        state.command = "custom-codex-acp"
         val queuedExecutor = QueuedExecutor()
 
         val configurable = CommitGenerationConfigurable(
@@ -262,11 +266,12 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.CLAUDE_AGENT_ACP.name
         state.model = "sonnet"
+        state.command = "claude-acp"
         var loadCount = 0
 
         val configurable = testConfigurable { _, _, _, _ ->
             loadCount += 1
-            if (loadCount == 1) Result.success(listOf("default", "sonnet")) else Result.failure(IllegalStateException("claude-agent-acp not found"))
+            if (loadCount == 1) Result.success(listOf("default", "sonnet")) else Result.failure(IllegalStateException("explicit Claude ACP command not available"))
         }
         val component = configurable.createComponent()
         val modelComboBox = modelComboBox(component)
@@ -277,6 +282,36 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
 
         assertEquals(listOf("Agent default", "default", "sonnet"), modelItems(modelComboBox))
         assertEquals("sonnet", modelComboBox.selectedItem)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testClaudeAndCodexProfilesAreNotConfiguredWithoutExplicitAcpCommand() {
+        val state = CommitGenerationSettings.getInstance().state
+
+        state.profileName = AgentProfile.CLAUDE_AGENT_ACP.name
+        state.command = ""
+        assertFalse(CommitGenerationSettings.getInstance().isConfigured())
+
+        state.profileName = AgentProfile.CODEX_ACP.name
+        state.command = ""
+        assertFalse(CommitGenerationSettings.getInstance().isConfigured())
+    }
+
+    fun testCodexProfileWithoutExplicitAcpCommandDoesNotLoadModels() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+        var loadCount = 0
+
+        val configurable = testConfigurable { _, _, _, _ ->
+            loadCount += 1
+            Result.success(listOf("gpt-5.4-mini"))
+        }
+        val component = configurable.createComponent()
+
+        assertEquals(0, loadCount)
+        assertEquals(listOf("Agent default"), modelItems(modelComboBox(component)))
+        assertEquals("The selected profile has no command.", modelStatusLabel(component).text)
 
         configurable.disposeUIResources()
     }

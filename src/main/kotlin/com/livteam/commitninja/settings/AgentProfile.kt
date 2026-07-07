@@ -3,8 +3,8 @@ package com.livteam.commitninja.settings
 enum class AgentProfile(val displayName: String, val defaultCommand: String, val defaultArguments: String) {
     NONE("Not configured", "", ""),
     OPENCODE("opencode", "opencode", "acp"),
-    CLAUDE_AGENT_ACP("Claude", "claude-agent-acp", ""),
-    CODEX_ACP("Codex", "codex-acp", "");
+    CLAUDE_AGENT_ACP("Claude", "", ""),
+    CODEX_ACP("Codex", "", "");
 
     override fun toString(): String = displayName
 

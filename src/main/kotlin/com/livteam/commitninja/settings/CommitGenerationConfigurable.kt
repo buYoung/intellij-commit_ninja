@@ -201,6 +201,8 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         val profile = selectedProfile()
         defaultCommandLabel.text = if (profile == AgentProfile.NONE) {
             MyBundle["settings.agent.defaultCommand.none"]
+        } else if (profile.defaultCommand.isBlank()) {
+            MyBundle["settings.agent.defaultCommand.customRequired"]
         } else {
             MyBundle["settings.agent.defaultCommand", profile.defaultCommand, profile.defaultArguments.ifBlank { "-" }]
         }

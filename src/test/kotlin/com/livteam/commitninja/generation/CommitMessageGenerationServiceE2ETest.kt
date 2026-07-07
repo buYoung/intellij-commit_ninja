@@ -47,12 +47,12 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         )
     }
 
-    fun testClaudeAdapterLaunchFailureReportsUsefulDiagnostic() {
-        val failingClaudeAdapter = Files.createTempFile("fake-claude-agent-acp", ".sh")
+    fun testExplicitClaudeAcpLaunchFailureReportsUsefulDiagnostic() {
+        val failingClaudeAdapter = Files.createTempFile("fake-custom-claude-acp", ".sh")
         failingClaudeAdapter.writeText(
             """
             #!/bin/sh
-            printf 'claude-agent-acp adapter is not installed\n' >&2
+            printf 'custom Claude ACP adapter is not installed\n' >&2
             exit 127
             """.trimIndent(),
         )
@@ -79,7 +79,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         assertTrue(result.toString(), result is CommitMessageGenerationResult.Failure)
         val diagnostic = (result as CommitMessageGenerationResult.Failure).diagnostic
         assertEquals(GenerationFailureType.PROTOCOL_FAILED, diagnostic.type)
-        assertTrue(diagnostic.message, "claude-agent-acp adapter is not installed" in diagnostic.message)
+        assertTrue(diagnostic.message, "custom Claude ACP adapter is not installed" in diagnostic.message)
         assertTrue(diagnostic.message, failingClaudeAdapter.fileName.toString() in diagnostic.message)
     }
 

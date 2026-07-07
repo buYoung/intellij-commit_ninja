@@ -1,7 +1,5 @@
 package com.livteam.commitninja.acp
 
-import com.google.gson.JsonElement
-import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.Logger
 import com.livteam.commitninja.settings.AgentProfile
 import java.io.File
@@ -22,8 +20,9 @@ object AgentModelOptionsLoader {
         )
         val result = when (profile) {
             AgentProfile.OPENCODE -> loadOpencodeModels(command, arguments, workingDirectory)
-            AgentProfile.CODEX_ACP -> loadCodexModels(command, workingDirectory)
-            AgentProfile.CLAUDE_AGENT_ACP -> Result.success(CLAUDE_MODEL_CHOICES)
+            AgentProfile.CODEX_ACP,
+            AgentProfile.CLAUDE_AGENT_ACP,
+            -> loadConfiguredAcpModels(command, arguments, workingDirectory)
             AgentProfile.NONE -> Result.success(emptyList())
         }
         result.fold(
@@ -60,24 +59,15 @@ object AgentModelOptionsLoader {
         return acpModels.recoverCatching { emptyList() }
     }
 
-    private fun loadCodexModels(command: String, workingDirectory: String?): Result<List<String>> {
-        val catalog = runCommand(codexModelDiscoveryCommand(command), listOf("debug", "models", "--bundled"), workingDirectory)
-        return catalog.mapCatching(::extractCodexModelSlugs)
-    }
-
-    fun codexModelDiscoveryCommand(generationCommand: String): String {
-        val command = generationCommand.trim()
-        if (command == AgentProfile.CODEX_ACP.defaultCommand) {
-            return CODEX_MODEL_DISCOVERY_COMMAND
+    private fun loadConfiguredAcpModels(
+        command: String,
+        arguments: List<String>,
+        workingDirectory: String?,
+    ): Result<List<String>> {
+        if (command.isBlank()) {
+            return Result.failure(IllegalStateException("Explicit ACP command configuration is required for this profile."))
         }
-        val commandFile = File(command)
-        if (commandFile.name == AgentProfile.CODEX_ACP.defaultCommand) {
-            return commandFile.parentFile
-                ?.resolve(CODEX_MODEL_DISCOVERY_COMMAND)
-                ?.path
-                ?: CODEX_MODEL_DISCOVERY_COMMAND
-        }
-        return command
+        return AcpModelOptionsLoader.load(command, arguments, workingDirectory)
     }
 
     private fun loadCommandModels(
@@ -150,29 +140,6 @@ object AgentModelOptionsLoader {
         return task
     }
 
-    private fun extractCodexModelSlugs(output: String): List<String> {
-        val root = JsonParser.parseString(output)
-        return findJsonObjects(root)
-            .asSequence()
-            .mapNotNull { jsonObject -> jsonObject["slug"]?.asString ?: jsonObject["id"]?.asString }
-            .filter { it.startsWith("gpt-") }
-            .filterNot { it == CODEX_AUTO_REVIEW_MODEL }
-            .distinct()
-            .toList()
-    }
-
-    private fun findJsonObjects(element: JsonElement?): List<com.google.gson.JsonObject> {
-        if (element == null || element.isJsonNull) return emptyList()
-        if (element.isJsonObject) {
-            val jsonObject = element.asJsonObject
-            return listOf(jsonObject) + jsonObject.entrySet().flatMap { findJsonObjects(it.value) }
-        }
-        if (element.isJsonArray) {
-            return element.asJsonArray.flatMap { findJsonObjects(it) }
-        }
-        return emptyList()
-    }
-
     private fun isModelLine(line: String): Boolean =
         line.isNotBlank() && "/" in line && !line.startsWith("#")
 
@@ -208,12 +175,8 @@ object AgentModelOptionsLoader {
         }
     }
 
-    private val CLAUDE_MODEL_CHOICES = listOf("default", "opus", "sonnet", "haiku")
-
     private val LOG = Logger.getInstance(AgentModelOptionsLoader::class.java)
 
-    private const val CODEX_MODEL_DISCOVERY_COMMAND = "codex"
-    private const val CODEX_AUTO_REVIEW_MODEL = "codex-auto-review"
     private const val MODEL_LIST_TIMEOUT_SECONDS = 15L
     private const val MODEL_STREAM_JOIN_TIMEOUT_MILLIS = 1_000L
     private const val MAX_DIAGNOSTIC_CHARS = 1_000
