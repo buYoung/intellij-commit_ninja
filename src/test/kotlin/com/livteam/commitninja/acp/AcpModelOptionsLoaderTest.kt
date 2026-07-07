@@ -14,14 +14,13 @@ import kotlin.io.path.writeText
 
 class AcpModelOptionsLoaderTest {
     @Test
-    fun `opencode ACP model loader uses newline JSON and sends client version`() {
+    fun `opencode ACP model loader uses SDK newline JSON and sends client version`() {
         val javaExecutable = javaExecutable()
         val classpath = System.getProperty("java.class.path")
         val result = AcpModelOptionsLoader.load(
             javaExecutable,
             listOf("-cp", classpath, FakeOpencodeAcpServer::class.java.name),
             null,
-            AcpModelOptionsLoader.Transport.NEWLINE_JSON,
         )
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
@@ -32,14 +31,13 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
-    fun `opencode ACP model loader preserves UTF-8 newline JSON option values`() {
+    fun `opencode ACP model loader preserves UTF-8 SDK option values`() {
         val javaExecutable = javaExecutable()
         val classpath = System.getProperty("java.class.path")
         val result = AcpModelOptionsLoader.load(
             javaExecutable,
             listOf("-cp", classpath, FakeUtf8OpencodeAcpServer::class.java.name),
             null,
-            AcpModelOptionsLoader.Transport.NEWLINE_JSON,
         )
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
@@ -85,7 +83,7 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
-    fun `opencode model loader tries ACP newline JSON before cli models`() {
+    fun `opencode model loader uses ACP SDK path instead of cli models`() {
         val javaExecutable = javaExecutable()
         val classpath = System.getProperty("java.class.path")
         val result = AgentModelOptionsLoader.load(
@@ -103,7 +101,7 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
-    fun `opencode model loader falls back to cli models when ACP config options are empty`() {
+    fun `opencode model loader does not use cli models when ACP config options are empty`() {
         val fakeOpencode = Files.createTempFile("fake-opencode", ".sh")
         fakeOpencode.writeText(
             """
@@ -126,11 +124,10 @@ class AcpModelOptionsLoaderTest {
             workingDirectory = null,
         )
 
-        assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
-        assertEquals(
-            listOf("ollama-cloud/deepseek-v4-pro", "ollama-cloud/deepseek-v4-flash"),
-            result.getOrThrow(),
-        )
+        assertTrue(result.isFailure)
+        val message = result.exceptionOrNull()?.message.orEmpty()
+        assertTrue(message, "closed" in message || "exited" in message)
+        assertTrue(message, "ollama-cloud/deepseek-v4-pro" !in message)
     }
 
     @Test
@@ -140,13 +137,13 @@ class AcpModelOptionsLoaderTest {
         val result = AgentModelOptionsLoader.load(
             profile = AgentProfile.CODEX_ACP,
             command = javaExecutable,
-            arguments = listOf("-cp", classpath, FakeAcpServer::class.java.name),
+            arguments = listOf("-cp", classpath, FakeOpencodeAcpServer::class.java.name),
             workingDirectory = null,
         )
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
         assertEquals(
-            listOf("openai/gpt-5.1", "anthropic/claude-sonnet-4-5"),
+            listOf("ollama-cloud/deepseek-v4-pro", "ollama-cloud/deepseek-v4-flash"),
             result.getOrThrow(),
         )
     }
@@ -158,13 +155,13 @@ class AcpModelOptionsLoaderTest {
         val result = AgentModelOptionsLoader.load(
             profile = AgentProfile.CLAUDE_AGENT_ACP,
             command = javaExecutable,
-            arguments = listOf("-cp", classpath, FakeAcpServer::class.java.name),
+            arguments = listOf("-cp", classpath, FakeOpencodeAcpServer::class.java.name),
             workingDirectory = null,
         )
 
         assertTrue(result.exceptionOrNull()?.stackTraceToString().orEmpty(), result.isSuccess)
         assertEquals(
-            listOf("openai/gpt-5.1", "anthropic/claude-sonnet-4-5"),
+            listOf("ollama-cloud/deepseek-v4-pro", "ollama-cloud/deepseek-v4-flash"),
             result.getOrThrow(),
         )
     }
@@ -232,23 +229,26 @@ class AcpModelOptionsLoaderTest {
             val output = BufferedOutputStream(System.out)
             while (true) {
                 val message = readJsonLine(input) ?: return
+                check(!message.startsWith("Content-Length", ignoreCase = true)) {
+                    "model loading must use SDK newline JSON transport"
+                }
                 when {
-                    "\"id\":1" in message -> {
+                    "\"method\":\"initialize\"" in message -> {
                         check("\"clientInfo\"" in message && "\"version\"" in message) {
                             "initialize request must include clientInfo.version"
                         }
                         writeJsonLine(
                             output,
                             """
-                            {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}
+                            {"jsonrpc":"2.0","id":${extractId(message)},"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake-agent","version":"0.0.1"}}}
                             """.trimIndent(),
                         )
                     }
-                    "\"id\":2" in message -> {
+                    "\"method\":\"session/new\"" in message -> {
                         writeJsonLine(
                             output,
                             """
-                            {"jsonrpc":"2.0","id":2,"result":{"sessionId":"test","configOptions":[{"id":"model","title":"Model","options":[{"value":"ollama-cloud/deepseek-v4-pro"},{"value":"ollama-cloud/deepseek-v4-flash"}]}]}}
+                            {"jsonrpc":"2.0","id":${extractId(message)},"result":{"sessionId":"test","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"ollama-cloud/deepseek-v4-pro","options":[{"value":"ollama-cloud/deepseek-v4-pro","name":"DeepSeek V4 Pro"},{"value":"ollama-cloud/deepseek-v4-flash","name":"DeepSeek V4 Flash"}]}]}}
                             """.trimIndent(),
                         )
                         return
@@ -272,6 +272,24 @@ class AcpModelOptionsLoaderTest {
             output.write('\n'.code)
             output.flush()
         }
+
+        fun extractId(message: String): String {
+            val idStart = message.indexOf("\"id\":")
+            check(idStart >= 0) { "request must include id" }
+            val valueStart = idStart + "\"id\":".length
+            var index = valueStart
+            var inString = false
+            while (index < message.length) {
+                val char = message[index]
+                if (char == '"' && (index == valueStart || message[index - 1] != '\\')) {
+                    inString = !inString
+                } else if (!inString && (char == ',' || char == '}')) {
+                    return message.substring(valueStart, index).trim()
+                }
+                index += 1
+            }
+            return message.substring(valueStart).trim()
+        }
     }
 
     object FakeUtf8OpencodeAcpServer {
@@ -281,18 +299,21 @@ class AcpModelOptionsLoaderTest {
             val output = BufferedOutputStream(System.out)
             while (true) {
                 val message = FakeOpencodeAcpServer.readJsonLine(input) ?: return
+                check(!message.startsWith("Content-Length", ignoreCase = true)) {
+                    "model loading must use SDK newline JSON transport"
+                }
                 when {
-                    "\"id\":1" in message -> FakeOpencodeAcpServer.writeJsonLine(
+                    "\"method\":\"initialize\"" in message -> FakeOpencodeAcpServer.writeJsonLine(
                         output,
                         """
-                        {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}
+                        {"jsonrpc":"2.0","id":${FakeOpencodeAcpServer.extractId(message)},"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake-agent","version":"0.0.1"}}}
                         """.trimIndent(),
                     )
-                    "\"id\":2" in message -> {
+                    "\"method\":\"session/new\"" in message -> {
                         FakeOpencodeAcpServer.writeJsonLine(
                             output,
                             """
-                            {"jsonrpc":"2.0","id":2,"result":{"sessionId":"test","configOptions":[{"id":"model","title":"모델","options":[{"value":"ollama-cloud/한글-모델"},{"value":"로컬/테스트"}]}]}}
+                            {"jsonrpc":"2.0","id":${FakeOpencodeAcpServer.extractId(message)},"result":{"sessionId":"test","configOptions":[{"type":"select","id":"model","name":"모델","category":"model","currentValue":"ollama-cloud/한글-모델","options":[{"value":"ollama-cloud/한글-모델","name":"한글 모델"},{"value":"로컬/테스트","name":"로컬 테스트"}]}]}}
                             """.trimIndent(),
                         )
                         return
@@ -308,19 +329,22 @@ class AcpModelOptionsLoaderTest {
             val input = BufferedInputStream(System.`in`)
             val output = BufferedOutputStream(System.out)
             while (true) {
-                val message = readMessage(input) ?: return
+                val message = FakeOpencodeAcpServer.readJsonLine(input) ?: return
+                check(!message.startsWith("Content-Length", ignoreCase = true)) {
+                    "model loading must use SDK newline JSON transport"
+                }
                 when {
-                    "\"id\":1" in message -> writeMessage(
+                    "\"method\":\"initialize\"" in message -> FakeOpencodeAcpServer.writeJsonLine(
                         output,
                         """
-                        {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}
+                        {"jsonrpc":"2.0","id":${FakeOpencodeAcpServer.extractId(message)},"result":{"protocolVersion":1,"agentCapabilities":{},"agentInfo":{"name":"fake-agent","version":"0.0.1"}}}
                         """.trimIndent(),
                     )
-                    "\"id\":2" in message -> {
-                        writeMessage(
+                    "\"method\":\"session/new\"" in message -> {
+                        FakeOpencodeAcpServer.writeJsonLine(
                             output,
                             """
-                            {"jsonrpc":"2.0","id":2,"result":{"sessionId":"test","configOptions":[{"id":"model","title":"Model","options":[{"value":"openai/gpt-5.1"},{"value":"anthropic/claude-sonnet-4-5"}]}]}}
+                            {"jsonrpc":"2.0","id":${FakeOpencodeAcpServer.extractId(message)},"result":{"sessionId":"test","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"openai/gpt-5.1","options":[{"value":"openai/gpt-5.1","name":"GPT 5.1"},{"value":"anthropic/claude-sonnet-4-5","name":"Claude Sonnet 4.5"}]}]}}
                             """.trimIndent(),
                         )
                         return
@@ -329,38 +353,5 @@ class AcpModelOptionsLoaderTest {
             }
         }
 
-        private fun readMessage(input: BufferedInputStream): String? {
-            var contentLength: Int? = null
-            while (true) {
-                val line = readAsciiLine(input) ?: return null
-                if (line.isEmpty()) break
-                val separator = line.indexOf(':')
-                if (separator > 0 && line.substring(0, separator).equals("Content-Length", ignoreCase = true)) {
-                    contentLength = line.substring(separator + 1).trim().toIntOrNull()
-                }
-            }
-            val bytes = input.readNBytes(contentLength ?: return null)
-            return String(bytes, StandardCharsets.UTF_8)
-        }
-
-        private fun readAsciiLine(input: BufferedInputStream): String? {
-            val bytes = mutableListOf<Byte>()
-            while (true) {
-                val next = input.read()
-                if (next == -1) return if (bytes.isEmpty()) null else String(bytes.toByteArray(), StandardCharsets.US_ASCII)
-                if (next == '\n'.code) {
-                    if (bytes.lastOrNull() == '\r'.code.toByte()) bytes.removeAt(bytes.lastIndex)
-                    return String(bytes.toByteArray(), StandardCharsets.US_ASCII)
-                }
-                bytes.add(next.toByte())
-            }
-        }
-
-        private fun writeMessage(output: BufferedOutputStream, json: String) {
-            val bytes = json.toByteArray(StandardCharsets.UTF_8)
-            output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
-            output.write(bytes)
-            output.flush()
-        }
     }
 }

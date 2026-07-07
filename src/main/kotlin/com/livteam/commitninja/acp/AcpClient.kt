@@ -1,9 +1,25 @@
 package com.livteam.commitninja.acp
 
-import com.google.gson.Gson
-import com.google.gson.JsonElement
-import com.google.gson.JsonObject
-import com.google.gson.JsonParser
+import com.agentclientprotocol.annotations.UnstableApi
+import com.agentclientprotocol.client.Client
+import com.agentclientprotocol.client.ClientInfo
+import com.agentclientprotocol.common.ClientSessionOperations
+import com.agentclientprotocol.common.Event
+import com.agentclientprotocol.common.SessionCreationParameters
+import com.agentclientprotocol.model.ClientCapabilities
+import com.agentclientprotocol.model.ContentBlock
+import com.agentclientprotocol.model.Implementation
+import com.agentclientprotocol.model.ModelId
+import com.agentclientprotocol.model.PermissionOption
+import com.agentclientprotocol.model.RequestPermissionOutcome
+import com.agentclientprotocol.model.RequestPermissionResponse
+import com.agentclientprotocol.model.SessionConfigId
+import com.agentclientprotocol.model.SessionConfigOption
+import com.agentclientprotocol.model.SessionConfigOptionCategory
+import com.agentclientprotocol.model.SessionConfigOptionValue
+import com.agentclientprotocol.model.SessionUpdate
+import com.agentclientprotocol.protocol.Protocol
+import com.agentclientprotocol.transport.StdioTransport
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.concurrency.AppExecutorUtil
@@ -12,22 +28,26 @@ import com.livteam.commitninja.generation.CommitMessageGenerationResult
 import com.livteam.commitninja.generation.CommitMessageOutputParser
 import com.livteam.commitninja.generation.GenerationDiagnostic
 import com.livteam.commitninja.generation.GenerationFailureType
-import com.livteam.commitninja.settings.AgentProfile
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonElement
 
 class AcpClient(private val project: Project) {
-    private val gson = Gson()
-
     fun generate(request: CommitMessageGenerationRequest, prompt: String): CommitMessageGenerationResult {
         val command = listOf(request.command) + request.arguments
-        val transport = transportFor(request.profile)
         LOG.info(
-            "Starting ACP commit generation: profile=${request.profile.name}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, transport=$transport, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
+            "Starting ACP commit generation through Kotlin SDK: profile=${request.profile.name}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
         )
         LOG.debug("ACP commit generation prompt payload:\n$prompt")
         val process = try {
@@ -36,7 +56,7 @@ class AcpClient(private val project: Project) {
                 .start()
         } catch (exception: Exception) {
             LOG.warn(
-                "Could not start ACP agent: command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, transport=$transport",
+                "Could not start ACP agent: command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}",
                 exception,
             )
             return failure(
@@ -52,7 +72,11 @@ class AcpClient(private val project: Project) {
             }
         }
         return try {
-            executor.submit<CommitMessageGenerationResult> { runProtocol(process, request, prompt) }.get(60, TimeUnit.SECONDS)
+            runBlocking {
+                withTimeout(GENERATION_TIMEOUT_MILLIS) {
+                    runSdkProtocol(process, request, prompt)
+                }
+            }
         } catch (exception: TimeoutException) {
             process.destroyForcibly()
             LOG.warn("ACP commit generation timed out: ${diagnosticMessage("timeout", command, process, stderrFuture)}")
@@ -60,6 +84,17 @@ class AcpClient(private val project: Project) {
                 GenerationFailureType.TIMEOUT,
                 diagnosticMessage("ACP agent did not finish before the timeout.", command, process, stderrFuture),
             )
+        } catch (exception: kotlinx.coroutines.TimeoutCancellationException) {
+            val exitedBeforeTimeout = runCatching { !process.isAlive }.getOrDefault(false)
+            process.destroyForcibly()
+            val failureType = if (exitedBeforeTimeout) GenerationFailureType.PROTOCOL_FAILED else GenerationFailureType.TIMEOUT
+            val reason = if (exitedBeforeTimeout) {
+                "ACP agent exited before completing the protocol."
+            } else {
+                "ACP agent did not finish before the timeout."
+            }
+            LOG.warn("ACP commit generation timed out: ${diagnosticMessage(reason, command, process, stderrFuture)}")
+            failure(failureType, diagnosticMessage(reason, command, process, stderrFuture))
         } catch (exception: InterruptedException) {
             process.destroyForcibly()
             Thread.currentThread().interrupt()
@@ -97,177 +132,129 @@ class AcpClient(private val project: Project) {
         }
     }
 
-    private fun runProtocol(
+    @OptIn(UnstableApi::class)
+    private suspend fun runSdkProtocol(
         process: Process,
         request: CommitMessageGenerationRequest,
         prompt: String,
     ): CommitMessageGenerationResult {
-        val input = BufferedInputStream(process.inputStream)
-        val output = BufferedOutputStream(process.outputStream)
-        val transport = transportFor(request.profile)
-        LOG.info("Running ACP protocol: profile=${request.profile.name}, transport=$transport")
-        send(
-            output,
-            transport,
-            1,
-            "initialize",
-            mapOf(
-                "protocolVersion" to 1,
-                "clientInfo" to mapOf("name" to "Commit Ninja", "version" to "0.1.0"),
-                "clientCapabilities" to emptyMap<String, Any>(),
-            ),
+        val protocolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val outputWriter = process.outputStream.bufferedWriter(StandardCharsets.UTF_8)
+        val transport = StdioTransport(
+            parentScope = protocolScope,
+            ioDispatcher = Dispatchers.IO,
+            input = flow {
+                process.inputStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
+                    lines.forEach { line -> emit(line) }
+                }
+            },
+            output = { line ->
+                withContext(Dispatchers.IO) {
+                    outputWriter.write(line)
+                    outputWriter.newLine()
+                    outputWriter.flush()
+                }
+            },
+            name = "CommitNinjaAcpStdioTransport",
         )
-        val initializeResponse = readUntilResponse(input, 1)
-        LOG.debug("ACP initialize response: $initializeResponse")
-        val sessionParams = mutableMapOf<String, Any?>(
-            "cwd" to (request.workingDirectory ?: project.basePath ?: ""),
-            "mcpServers" to emptyList<Any>(),
-        )
-        send(output, transport, 2, "session/new", sessionParams)
-        val sessionResponse = readUntilResponse(input, 2)
-        LOG.debug("ACP session response: $sessionResponse")
-        val sessionId = sessionResponse["result"]?.asJsonObject?.get("sessionId")?.asString
-            ?: sessionResponse["result"]?.asJsonObject?.get("id")?.asString
-            ?: "commit-ninja"
-        val modelConfigOption = request.model
-            ?.takeIf { it.isNotBlank() }
-            ?.let { findModelConfigOption(initializeResponse) ?: findModelConfigOption(sessionResponse) }
-        if (modelConfigOption != null) {
-            send(
-                output,
-                transport,
-                3,
-                "session/set_config_option",
-                mapOf(
-                    "sessionId" to sessionId,
-                    "configId" to modelConfigOption,
-                    "value" to request.model,
+        val protocol = Protocol(protocolScope, transport)
+        val client = Client(protocol)
+
+        return try {
+            protocol.start()
+            client.initialize(
+                ClientInfo(
+                    capabilities = ClientCapabilities(),
+                    implementation = Implementation(name = "Commit Ninja", version = "0.1.0"),
                 ),
             )
-            readUntilResponse(input, 3)
-            LOG.info("Applied ACP model selection: profile=${request.profile.name}, model=${request.model}, configId=$modelConfigOption")
-        }
-        send(
-            output,
-            transport,
-            4,
-            "session/prompt",
-            mapOf(
-                "sessionId" to sessionId,
-                "prompt" to listOf(mapOf("type" to "text", "text" to prompt)),
-                "attachments" to emptyList<Any>(),
-            ),
-        )
-        val transcript = StringBuilder(MAX_ACP_TRANSCRIPT_CHARS.coerceAtMost(16_384))
-        while (process.isAlive) {
-            val message = readMessage(input) ?: break
-            LOG.debug("ACP raw incoming message: $message")
-            if (message["id"]?.asInt == 4) {
-                collectText(message["result"]?.asJsonObject, transcript)
-                break
+            val session = client.newSession(
+                SessionCreationParameters(
+                    cwd = request.workingDirectory ?: project.basePath ?: "",
+                    mcpServers = emptyList(),
+                ),
+            ) { _, _ -> CommitGenerationClientSessionOperations() }
+
+            request.model
+                ?.takeIf(String::isNotBlank)
+                ?.let { model -> applyModelSelection(session, model) }
+
+            val transcript = StringBuilder(MAX_ACP_TRANSCRIPT_CHARS.coerceAtMost(16_384))
+            session.prompt(listOf(ContentBlock.Text(prompt))).collect { event ->
+                when (event) {
+                    is Event.SessionUpdateEvent -> collectText(event.update, transcript)
+                    is Event.PromptResponseEvent -> LOG.debug("ACP prompt finished: stopReason=${event.response.stopReason}")
+                }
             }
-            collectText(message, transcript)
-        }
-        process.destroy()
-        val rawOutput = transcript.toString()
-        LOG.debug("ACP collected output:\n$rawOutput")
-        val parsed = CommitMessageOutputParser.parse(rawOutput)
-        return if (parsed == null) {
-            val diagnostic = parseFailureDiagnostic(rawOutput)
-            LOG.warn("Failed to parse ACP commit generation output: $diagnostic")
-            failure(GenerationFailureType.PARSE_FAILED, diagnostic)
-        } else {
-            LOG.info("Parsed ACP commit generation output: messageChars=${parsed.length}")
-            LOG.debug("ACP final commit message:\n$parsed")
-            CommitMessageGenerationResult.Success(parsed)
+            val rawOutput = transcript.toString()
+            LOG.debug("ACP collected output:\n$rawOutput")
+            val parsed = CommitMessageOutputParser.parse(rawOutput)
+            if (parsed == null) {
+                val diagnostic = parseFailureDiagnostic(rawOutput)
+                LOG.warn("Failed to parse ACP commit generation output: $diagnostic")
+                failure(GenerationFailureType.PARSE_FAILED, diagnostic)
+            } else {
+                LOG.info("Parsed ACP commit generation output: messageChars=${parsed.length}")
+                LOG.debug("ACP final commit message:\n$parsed")
+                CommitMessageGenerationResult.Success(parsed)
+            }
+        } finally {
+            transport.close()
+            protocolScope.cancel()
         }
     }
 
-    private fun send(output: BufferedOutputStream, transport: Transport, id: Int, method: String, params: Any?) {
-        val json = gson.toJson(mapOf("jsonrpc" to "2.0", "id" to id, "method" to method, "params" to params))
-        LOG.debug("ACP outgoing message: $json")
-        val bytes = json.toByteArray(StandardCharsets.UTF_8)
-        when (transport) {
-            Transport.CONTENT_LENGTH -> {
-                output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.write(bytes)
-            }
-            Transport.NEWLINE_JSON -> {
-                output.write(bytes)
-                output.write("\n".toByteArray(StandardCharsets.US_ASCII))
-            }
+    @OptIn(UnstableApi::class)
+    private suspend fun applyModelSelection(
+        session: com.agentclientprotocol.client.ClientSession,
+        model: String,
+    ) {
+        if (session.modelsSupported) {
+            session.setModel(ModelId(model))
+            LOG.info("Applied ACP model selection through session model API: model=$model")
+            return
         }
-        output.flush()
-    }
-
-    private fun transportFor(profile: AgentProfile): Transport =
-        when (profile) {
-            AgentProfile.OPENCODE -> Transport.NEWLINE_JSON
-            AgentProfile.CLAUDE_AGENT_ACP,
-            AgentProfile.CODEX_ACP,
-            AgentProfile.NONE,
-            -> Transport.CONTENT_LENGTH
-        }
-
-    private fun readUntilResponse(input: BufferedInputStream, id: Int): JsonObject {
-        while (true) {
-            val message = readMessage(input) ?: error("ACP agent closed the stream.")
-            LOG.debug("ACP raw incoming message: $message")
-            if (message["id"]?.asInt == id) {
-                if (message.has("error")) error("ACP error: ${message["error"]}")
-                return message
-            }
+        val modelConfigOption = session.configOptions.value.firstOrNull(::isModelConfigOption)
+        if (modelConfigOption != null) {
+            session.setConfigOption(
+                SessionConfigId(modelConfigOption.id.value),
+                SessionConfigOptionValue.StringValue(model),
+            )
+            LOG.info("Applied ACP model selection through session config option: model=$model, configId=${modelConfigOption.id.value}")
         }
     }
 
-    private fun readMessage(input: BufferedInputStream): JsonObject? {
-        val headerBytes = readLineBytes(input) ?: return null
-        if (headerBytes.firstOrNull() == '{'.code.toByte()) {
-            return JsonParser.parseString(String(headerBytes, StandardCharsets.UTF_8)).asJsonObject
-        }
-        val header = String(headerBytes, StandardCharsets.US_ASCII)
-        var contentLength: Int? = null
-        var line = header
-        while (line.isNotEmpty()) {
-            val separator = line.indexOf(':')
-            if (separator > 0 && line.substring(0, separator).equals("Content-Length", ignoreCase = true)) {
-                contentLength = line.substring(separator + 1).trim().toIntOrNull()
-            }
-            line = readAsciiLine(input) ?: return null
-        }
-        val length = contentLength ?: return null
-        val bytes = input.readNBytes(length)
-        return JsonParser.parseString(String(bytes, StandardCharsets.UTF_8)).asJsonObject
-    }
+    private class CommitGenerationClientSessionOperations : ClientSessionOperations {
+        override suspend fun requestPermissions(
+            toolCall: SessionUpdate.ToolCallUpdate,
+            permissions: List<PermissionOption>,
+            _meta: JsonElement?,
+        ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
 
-    private fun readAsciiLine(input: BufferedInputStream): String? {
-        val bytes = readLineBytes(input) ?: return null
-        return String(bytes, StandardCharsets.US_ASCII)
-    }
-
-    private fun readLineBytes(input: BufferedInputStream): ByteArray? {
-        val bytes = mutableListOf<Byte>()
-        while (true) {
-            val next = input.read()
-            if (next == -1) return if (bytes.isEmpty()) null else bytes.toByteArray()
-            if (next == '\n'.code) {
-                if (bytes.lastOrNull() == '\r'.code.toByte()) bytes.removeAt(bytes.lastIndex)
-                return bytes.toByteArray()
-            }
-            bytes.add(next.toByte())
+        override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) {
+            LOG.debug("ACP session notification outside prompt: $notification")
         }
     }
 
-    private fun collectText(json: JsonObject?, transcript: StringBuilder) {
-        if (json == null || transcript.length >= MAX_ACP_TRANSCRIPT_CHARS) return
-        for ((key, value) in json.entrySet()) {
-            if ((key == "text" || key == "content" || key == "message") && value.isJsonPrimitive) {
-                appendTranscriptText(transcript, value.asString)
-            } else if (value.isJsonObject) {
-                collectText(value.asJsonObject, transcript)
-            } else if (value.isJsonArray) {
-                value.asJsonArray.filter { it.isJsonObject }.forEach { collectText(it.asJsonObject, transcript) }
-            }
+    @OptIn(UnstableApi::class)
+    private fun isModelConfigOption(option: SessionConfigOption): Boolean {
+        if (option.category == SessionConfigOptionCategory.MODEL) return true
+        return listOf(option.id.value, option.name, option.description.orEmpty())
+            .any { value -> value.contains("model", ignoreCase = true) }
+    }
+
+    private fun collectText(update: SessionUpdate, transcript: StringBuilder) {
+        when (update) {
+            is SessionUpdate.AgentMessageChunk -> collectContentBlock(update.content, transcript)
+            is SessionUpdate.AgentThoughtChunk -> collectContentBlock(update.content, transcript)
+            is SessionUpdate.ToolCall -> update.content.orEmpty().forEach { appendTranscriptText(transcript, it.toString()) }
+            else -> Unit
+        }
+    }
+
+    private fun collectContentBlock(content: ContentBlock, transcript: StringBuilder) {
+        if (content is ContentBlock.Text) {
+            appendTranscriptText(transcript, content.text)
         }
     }
 
@@ -276,37 +263,6 @@ class AcpClient(private val project: Project) {
         if (remainingChars <= 0) return
         val line = "$text\n"
         transcript.append(line.take(remainingChars))
-    }
-
-    private fun findModelConfigOption(message: JsonObject): String? =
-        findConfigOptions(message)
-            .asSequence()
-            .filter { option ->
-                val id = option["id"]?.asString.orEmpty()
-                val name = option["name"]?.asString.orEmpty()
-                val title = option["title"]?.asString.orEmpty()
-                val description = option["description"]?.asString.orEmpty()
-                listOf(id, name, title, description).any { it.contains("model", ignoreCase = true) }
-            }
-            .mapNotNull { option -> option["id"]?.asString ?: option["name"]?.asString }
-            .firstOrNull()
-
-    private fun findConfigOptions(element: JsonElement?): List<JsonObject> {
-        if (element == null || element.isJsonNull) return emptyList()
-        if (element.isJsonObject) {
-            val json = element.asJsonObject
-            val directOptions = json["configOptions"]
-                ?.takeIf { it.isJsonArray }
-                ?.asJsonArray
-                ?.filter { it.isJsonObject }
-                ?.map { it.asJsonObject }
-                .orEmpty()
-            return directOptions + json.entrySet().flatMap { findConfigOptions(it.value) }
-        }
-        if (element.isJsonArray) {
-            return element.asJsonArray.flatMap { findConfigOptions(it) }
-        }
-        return emptyList()
     }
 
     private fun failure(type: GenerationFailureType, message: String): CommitMessageGenerationResult.Failure =
@@ -362,10 +318,6 @@ class AcpClient(private val project: Project) {
         val LOG = Logger.getInstance(AcpClient::class.java)
         const val MAX_ACP_TRANSCRIPT_CHARS = 120_000
         const val MAX_DIAGNOSTIC_CHARS = 2_000
-    }
-
-    private enum class Transport {
-        CONTENT_LENGTH,
-        NEWLINE_JSON,
+        const val GENERATION_TIMEOUT_MILLIS = 60_000L
     }
 }

@@ -14,7 +14,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
     fun testGeneratesCommitMessageThroughOpencodeLocalAcpBoundary() {
         assertGeneratesCommitMessageWithModel(
             profile = AgentProfile.OPENCODE,
-            transport = "newline-json",
             model = "ollama-cloud/deepseek-v4-pro",
             expectedMessage = "feat: update app output",
         )
@@ -23,7 +22,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
     fun testOpencodeNewlineJsonKeepsUtf8CommitMessage() {
         assertGeneratesCommitMessageWithModel(
             profile = AgentProfile.OPENCODE,
-            transport = "newline-json",
             model = "ollama-cloud/deepseek-v4-pro",
             expectedMessage = "feat: 한글 커밋 메시지",
         )
@@ -32,7 +30,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
     fun testGeneratesCommitMessageThroughCodexLocalAcpBoundary() {
         assertGeneratesCommitMessageWithModel(
             profile = AgentProfile.CODEX_ACP,
-            transport = "content-length",
             model = "gpt-5.4-mini",
             expectedMessage = "feat: update app output",
         )
@@ -41,7 +38,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
     fun testGeneratesCommitMessageThroughClaudeLocalAcpBoundary() {
         assertGeneratesCommitMessageWithModel(
             profile = AgentProfile.CLAUDE_AGENT_ACP,
-            transport = "content-length",
             model = "haiku",
             expectedMessage = "feat: update app output",
         )
@@ -122,7 +118,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
                 "-cp",
                 System.getProperty("java.class.path"),
                 FakeCommitMessageAcpServer::class.java.name,
-                "content-length",
                 "gpt-5.4-mini",
                 rawOutput,
             ),
@@ -153,7 +148,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
 
     private fun assertGeneratesCommitMessageWithModel(
         profile: AgentProfile,
-        transport: String,
         model: String,
         expectedMessage: String,
     ) {
@@ -164,7 +158,6 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
                 "-cp",
                 System.getProperty("java.class.path"),
                 FakeCommitMessageAcpServer::class.java.name,
-                transport,
                 model,
                 expectedMessage,
             ),
@@ -216,28 +209,26 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         fun main(args: Array<String>) {
             val input = BufferedInputStream(System.`in`)
             val output = BufferedOutputStream(System.out)
-            val transport = args.getOrNull(0) ?: "content-length"
-            val expectedModel = args.getOrNull(1) ?: error("expected model argument is required")
-            val commitMessage = args.getOrNull(2) ?: "feat: update app output"
+            val expectedModel = args.getOrNull(0) ?: error("expected model argument is required")
+            val commitMessage = args.getOrNull(1) ?: "feat: update app output"
             var sawCheckedChange = false
             while (true) {
-                val message = readMessage(input, transport) ?: return
-                when {
-                    "\"id\":1" in message -> writeMessage(
+                val message = readJsonLine(input) ?: return
+                val id = requestId(message) ?: continue
+                when (requestMethod(message)) {
+                    "initialize" -> writeMessage(
                         output,
                         """
-                        {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"configOptions":[{"id":"model","title":"Model","options":[{"value":"ollama-cloud/deepseek-v4-pro"},{"value":"gpt-5.4-mini"},{"value":"haiku"}]}]}}
+                        {"jsonrpc":"2.0","id":$id,"result":{"protocolVersion":1,"agentCapabilities":{}}}
                         """.trimIndent(),
-                        transport,
                     )
-                    "\"id\":2" in message -> writeMessage(
+                    "session/new" -> writeMessage(
                         output,
                         """
-                        {"jsonrpc":"2.0","id":2,"result":{"sessionId":"commit-e2e"}}
+                        {"jsonrpc":"2.0","id":$id,"result":{"sessionId":"commit-e2e","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"$expectedModel","options":[{"value":"ollama-cloud/deepseek-v4-pro","name":"ollama-cloud/deepseek-v4-pro"},{"value":"gpt-5.4-mini","name":"gpt-5.4-mini"},{"value":"haiku","name":"haiku"}]}]}}
                         """.trimIndent(),
-                        transport,
                     )
-                    "\"id\":3" in message -> {
+                    "session/set_config_option" -> {
                         check("\"method\":\"session/set_config_option\"" in message) {
                             "generation must set the requested model through session/set_config_option"
                         }
@@ -247,26 +238,30 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
                         writeMessage(
                             output,
                             """
-                            {"jsonrpc":"2.0","id":3,"result":{}}
+                            {"jsonrpc":"2.0","id":$id,"result":{"configOptions":[]}}
                             """.trimIndent(),
-                            transport,
                         )
                     }
-                    "\"id\":4" in message -> {
+                    "session/prompt" -> {
                         sawCheckedChange = "src/main/kotlin/App.kt" in message &&
                             "Write a concise Conventional Commit message." in message
                         writeMessage(
                             output,
                             if (sawCheckedChange) {
                                 """
-                                {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"$commitMessage"}]}}
+                                {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"commit-e2e","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"${jsonString(commitMessage)}"}}}}
                                 """.trimIndent()
                             } else {
                                 """
-                                {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"invalid"}]}}
+                                {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"commit-e2e","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"invalid"}}}}
                                 """.trimIndent()
                             },
-                            transport,
+                        )
+                        writeMessage(
+                            output,
+                            """
+                            {"jsonrpc":"2.0","id":$id,"result":{"stopReason":"end_turn"}}
+                            """.trimIndent(),
                         )
                         return
                     }
@@ -274,56 +269,38 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             }
         }
 
-        private fun readMessage(input: BufferedInputStream, transport: String): String? {
-            var contentLength: Int? = null
-            while (true) {
-                val line = readAsciiLine(input) ?: return null
-                if (line.startsWith("Content-Length", ignoreCase = true)) {
-                    check(transport == "content-length") {
-                        "opencode generation must use newline-delimited JSON"
-                    }
-                }
-                if (line.startsWith("{")) {
-                    check(transport == "newline-json") {
-                        "non-opencode generation must preserve Content-Length framing"
-                    }
-                    return line
-                }
-                if (line.isEmpty()) break
-                val separator = line.indexOf(':')
-                if (separator > 0 && line.substring(0, separator).equals("Content-Length", ignoreCase = true)) {
-                    contentLength = line.substring(separator + 1).trim().toIntOrNull()
-                }
-            }
-            check(transport == "content-length") {
-                "opencode generation must use newline-delimited JSON"
-            }
-            val bytes = input.readNBytes(contentLength ?: return null)
-            return String(bytes, StandardCharsets.UTF_8)
-        }
+        private fun requestMethod(message: String): String? =
+            Regex(""""method":"([^"]+)"""").find(message)?.groupValues?.get(1)
 
-        private fun readAsciiLine(input: BufferedInputStream): String? {
+        private fun requestId(message: String): String? =
+            Regex(""""id":("[^"]+"|\d+)""").find(message)?.groupValues?.get(1)
+
+        private fun jsonString(value: String): String =
+            value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+
+        private fun readJsonLine(input: BufferedInputStream): String? {
             val bytes = mutableListOf<Byte>()
             while (true) {
                 val next = input.read()
-                if (next == -1) return if (bytes.isEmpty()) null else String(bytes.toByteArray(), StandardCharsets.US_ASCII)
+                if (next == -1) return if (bytes.isEmpty()) null else String(bytes.toByteArray(), StandardCharsets.UTF_8)
                 if (next == '\n'.code) {
-                    if (bytes.lastOrNull() == '\r'.code.toByte()) bytes.removeAt(bytes.lastIndex)
-                    return String(bytes.toByteArray(), StandardCharsets.US_ASCII)
+                    val line = String(bytes.toByteArray(), StandardCharsets.UTF_8)
+                    check(!line.startsWith("Content-Length", ignoreCase = true)) {
+                        "all ACP generation profiles must use the shared SDK stdio transport"
+                    }
+                    return line
                 }
                 bytes.add(next.toByte())
             }
         }
 
-        private fun writeMessage(output: BufferedOutputStream, json: String, transport: String) {
-            val bytes = json.toByteArray(StandardCharsets.UTF_8)
-            if (transport == "newline-json") {
-                output.write(bytes)
-                output.write("\n".toByteArray(StandardCharsets.US_ASCII))
-            } else {
-                output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.write(bytes)
-            }
+        private fun writeMessage(output: BufferedOutputStream, json: String) {
+            output.write(json.toByteArray(StandardCharsets.UTF_8))
+            output.write("\n".toByteArray(StandardCharsets.US_ASCII))
             output.flush()
         }
     }
