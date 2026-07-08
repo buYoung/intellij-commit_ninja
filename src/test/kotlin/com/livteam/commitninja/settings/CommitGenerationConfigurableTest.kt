@@ -332,34 +332,12 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         configurable.disposeUIResources()
     }
 
-    fun testOpencodeChildSettingsAreVisibleOnlyForOpencodeProfile() {
-        val state = CommitGenerationSettings.getInstance().state
-        state.profileName = AgentProfile.NONE.name
+    fun testMainSettingsPageDoesNotContainOpencodeConfigButton() {
         val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
         val component = configurable.createComponent()
-        val profileComboBox = profileComboBox(component)
-        val openConfigButton = descendantsOfType(component, JButton::class.java)
-            .single { it.text == "Open opencode.jsonc" }
 
-        assertFalse(openConfigButton.isVisible)
-
-        profileComboBox.selectedItem = AgentProfile.OPENCODE
-        UIUtil.dispatchAllInvocationEvents()
-
-        assertTrue(openConfigButton.isVisible)
-
-        profileComboBox.selectedItem = AgentProfile.CODEX_ACP
-        UIUtil.dispatchAllInvocationEvents()
-
-        assertFalse(openConfigButton.isVisible)
-
+        assertTrue(descendantsOfType(component, JButton::class.java).none { it.text == "Open opencode.jsonc" })
         configurable.disposeUIResources()
-    }
-
-    fun testOpencodeConfigPathUsesUserHome() {
-        val configPath = CommitGenerationConfigurable.resolveOpencodeConfigPath("/Users/example")
-
-        assertEquals("/Users/example/.config/opencode/opencode.jsonc", configPath.toString())
     }
 
     fun testCodexSettingsPathLoadsModelsWhenStoredCommandIsExplicitAcpCommand() {
