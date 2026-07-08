@@ -1,6 +1,7 @@
 package com.livteam.commitninja.vcs
 
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.FilePath
 import com.intellij.openapi.vcs.ProjectLevelVcsManager
@@ -53,7 +54,16 @@ class CheckedCommitChangesProvider(
         if (!changes.isNullOrEmpty()) {
             val contexts = mutableListOf<CheckedChangeContext>()
             var remainingDetailChars = MAX_COLLECTED_CHANGE_DETAIL_CHARS
-            for (change in changes.prioritizeSourceChangesIfEnabled()) {
+            val smartDocumentBudgetingEnabled = smartDocumentBudgetingEnabledProvider()
+            val prioritizedChanges = changes.prioritizeSourceChangesIfEnabled(smartDocumentBudgetingEnabled)
+            LOG.info(
+                "Collecting checked changes for commit prompt: selectedCount=${changes.size}, " +
+                    "smartDocumentBudgetingEnabled=$smartDocumentBudgetingEnabled, " +
+                    "detailBudgetChars=$MAX_COLLECTED_CHANGE_DETAIL_CHARS, " +
+                    "selectedPaths=${changes.joinToString(",") { it.pathForDiagnostics() }}, " +
+                    "collectionOrder=${prioritizedChanges.joinToString(",") { it.pathForDiagnostics() }}",
+            )
+            for (change in prioritizedChanges) {
                 val context = change.toContext(remainingDetailChars)
                 contexts += context
                 if (!context.isDetailOmitted) {
@@ -61,7 +71,18 @@ class CheckedCommitChangesProvider(
                 } else {
                     remainingDetailChars = 0
                 }
+                LOG.info(
+                    "Collected checked change detail: path=${context.path}, status=${context.status}, " +
+                        "detailChars=${context.detail.length}, isDetailOmitted=${context.isDetailOmitted}, " +
+                        "remainingDetailBudgetChars=$remainingDetailChars",
+                )
             }
+            LOG.info(
+                "Collected checked changes summary: contextCount=${contexts.size}, " +
+                    "omittedCount=${contexts.count { it.isDetailOmitted }}, " +
+                    "totalDetailChars=${contexts.sumOf { it.detail.length }}, " +
+                    "remainingDetailBudgetChars=$remainingDetailChars",
+            )
             return contexts
         }
         return emptyList()
@@ -93,11 +114,14 @@ class CheckedCommitChangesProvider(
     private fun FilePath.toNewChange(): Change =
         Change(null, UnversionedContentRevision(this))
 
-    private fun List<Change>.prioritizeSourceChangesIfEnabled(): List<Change> {
-        if (!smartDocumentBudgetingEnabledProvider()) return this
+    private fun List<Change>.prioritizeSourceChangesIfEnabled(smartDocumentBudgetingEnabled: Boolean): List<Change> {
+        if (!smartDocumentBudgetingEnabled) return this
         val (documentChanges, sourceChanges) = partition { it.isDocumentLikeChange() }
         return sourceChanges + documentChanges
     }
+
+    private fun Change.pathForDiagnostics(): String =
+        afterRevision?.file?.path ?: beforeRevision?.file?.path ?: virtualFile?.path ?: toString()
 
     private fun Change.isDocumentLikeChange(): Boolean {
         val path = afterRevision?.file?.path ?: beforeRevision?.file?.path ?: virtualFile?.path ?: return false
@@ -306,6 +330,7 @@ class CheckedCommitChangesProvider(
     }
 
     private companion object {
+        val LOG = Logger.getInstance(CheckedCommitChangesProvider::class.java)
         const val MAX_COLLECTED_CHANGE_DETAIL_CHARS = 200_000
         const val MAX_PATCH_SOURCE_CHARS = 200_000
         const val MAX_PATCH_SOURCE_LINES = 20_000

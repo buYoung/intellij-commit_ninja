@@ -25,6 +25,7 @@ import com.agentclientprotocol.transport.StdioTransport
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.concurrency.AppExecutorUtil
+import com.livteam.commitninja.diagnostics.CommitNinjaDiagnosticFiles
 import com.livteam.commitninja.generation.CommitMessageGenerationRequest
 import com.livteam.commitninja.generation.CommitMessageGenerationResult
 import com.livteam.commitninja.generation.CommitMessageOutputParser
@@ -51,7 +52,12 @@ class AcpClient(private val project: Project) {
         LOG.info(
             "Starting ACP commit generation through Kotlin SDK: profile=${request.profileId}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
         )
-        LOG.debug("ACP commit generation input prompt:\n$prompt")
+        LOG.debug("ACP commit generation input prompt summary: promptChars=${prompt.length}, promptLines=${prompt.lineCount()}")
+        CommitNinjaDiagnosticFiles.logDebugText(
+            logger = LOG,
+            label = "acp-input-prompt",
+            content = prompt,
+        )
         val process = try {
             ProcessBuilder(command)
                 .directory(request.workingDirectory?.let(::File))
@@ -142,15 +148,31 @@ class AcpClient(private val project: Project) {
     ): CommitMessageGenerationResult {
         val protocolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val outputWriter = process.outputStream.bufferedWriter(StandardCharsets.UTF_8)
+        var acpStdoutLineCount = 0
+        var acpStdinLineCount = 0
         val transport = StdioTransport(
             parentScope = protocolScope,
             ioDispatcher = Dispatchers.IO,
             input = flow {
                 process.inputStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
-                    lines.forEach { line -> emit(line) }
+                    lines.forEach { line ->
+                        acpStdoutLineCount += 1
+                        CommitNinjaDiagnosticFiles.logDebugText(
+                            logger = LOG,
+                            label = "acp-transport-stdout-line-$acpStdoutLineCount",
+                            content = line,
+                        )
+                        emit(line)
+                    }
                 }
             },
             output = { line ->
+                acpStdinLineCount += 1
+                CommitNinjaDiagnosticFiles.logDebugText(
+                    logger = LOG,
+                    label = "acp-transport-stdin-line-$acpStdinLineCount",
+                    content = line,
+                )
                 withContext(Dispatchers.IO) {
                     outputWriter.write(line)
                     outputWriter.newLine()
@@ -189,15 +211,50 @@ class AcpClient(private val project: Project) {
                 }
             }
             val rawOutput = transcript.toString()
-            LOG.debug("ACP collected output prompt:\n$rawOutput")
+            LOG.info(
+                "ACP collected output: outputChars=${rawOutput.length}, outputLines=${rawOutput.lineCount()}, " +
+                    "wasTranscriptTruncated=${rawOutput.length >= MAX_ACP_TRANSCRIPT_CHARS}",
+            )
+            if (LOG.isDebugEnabled) {
+                CommitNinjaDiagnosticFiles.logDebugText(
+                    logger = LOG,
+                    label = "acp-raw-output",
+                    content = rawOutput,
+                )
+                val rawOutputDiagnosticPath = CommitNinjaDiagnosticFiles.writeText(
+                    logger = LOG,
+                    fileNamePrefix = "commit-generation-acp-output",
+                    fileExtension = "txt",
+                    content = rawOutput,
+                )
+                LOG.info("ACP raw output written to: ${rawOutputDiagnosticPath ?: "<unavailable>"}")
+            }
             val parsed = CommitMessageOutputParser.parse(rawOutput)
             if (parsed == null) {
                 val diagnostic = parseFailureDiagnostic(rawOutput)
                 LOG.warn("Failed to parse ACP commit generation output: $diagnostic")
                 failure(GenerationFailureType.PARSE_FAILED, diagnostic)
             } else {
-                LOG.info("Parsed ACP commit generation output: messageChars=${parsed.length}")
-                LOG.debug("ACP final commit message:\n$parsed")
+                val parsedLines = parsed.lineCount()
+                val parsedBodyItemCount = Regex("(?m)^\\s*\\d+\\.\\s+").findAll(parsed).count()
+                LOG.info(
+                    "Parsed ACP commit generation output: messageChars=${parsed.length}, " +
+                        "messageLines=$parsedLines, bodyItemCount=$parsedBodyItemCount, isSingleLine=${parsedLines == 1}",
+                )
+                if (LOG.isDebugEnabled) {
+                    CommitNinjaDiagnosticFiles.logDebugText(
+                        logger = LOG,
+                        label = "acp-parsed-commit-message",
+                        content = parsed,
+                    )
+                    val parsedMessageDiagnosticPath = CommitNinjaDiagnosticFiles.writeText(
+                        logger = LOG,
+                        fileNamePrefix = "commit-generation-parsed-message",
+                        fileExtension = "txt",
+                        content = parsed,
+                    )
+                    LOG.info("ACP parsed commit message written to: ${parsedMessageDiagnosticPath ?: "<unavailable>"}")
+                }
                 CommitMessageGenerationResult.Success(parsed)
             }
         } finally {
@@ -321,11 +378,16 @@ class AcpClient(private val project: Project) {
         return preview + suffix
     }
 
+    private fun String.lineCount(): Int {
+        if (isEmpty()) return 0
+        return count { it == '\n' } + 1
+    }
+
     private fun formatCommand(command: List<String>): String = command.joinToString(" ")
 
     private companion object {
         val LOG = Logger.getInstance(AcpClient::class.java)
-        const val MAX_ACP_TRANSCRIPT_CHARS = 120_000
+        const val MAX_ACP_TRANSCRIPT_CHARS = 200_000
         const val MAX_DIAGNOSTIC_CHARS = 2_000
         const val GENERATION_TIMEOUT_MILLIS = 180_000L
     }

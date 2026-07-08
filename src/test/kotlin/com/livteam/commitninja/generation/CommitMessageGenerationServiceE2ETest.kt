@@ -277,7 +277,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             assertFalse(prompt, "TICKET_ID=" in prompt)
             assertFalse(prompt, "Preferred model:" in prompt)
             assertFalse(prompt, "Selected file contents:" in prompt)
-            assertTrue(prompt, "## Commit Message\n---\nPath: src/main/kotlin/App.kt" in prompt)
+            assertPromptReferencesPatchFile(prompt, "src/main/kotlin/App.kt")
         }
     }
 
@@ -316,7 +316,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         assertFalse(prompt, "TICKET_ID=" in prompt)
         assertFalse(prompt, "Preferred model:" in prompt)
         assertFalse(prompt, "Selected file contents:" in prompt)
-        assertTrue(prompt, "## Commit Message\n---\nPath: src/main/kotlin/App.kt" in prompt)
+        assertPromptReferencesPatchFile(prompt, "src/main/kotlin/App.kt")
     }
 
     fun testOmittedChangeDetailsDoNotInsertWarningBeforeSelectedFileEntries() {
@@ -348,7 +348,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
 
         assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
         val prompt = requireNotNull(capturedPrompt)
-        assertTrue(prompt, "## Commit Message\n---\nPath: src/main/kotlin/App.kt" in prompt)
+        assertPromptReferencesPatchFile(prompt, "src/main/kotlin/App.kt")
         assertFalse(prompt, "Checked-change detail was truncated" in prompt)
         assertFalse(prompt, "GIT_BRANCH_NAME=" in prompt)
         assertFalse(prompt, "TICKET_ID=" in prompt)
@@ -552,6 +552,19 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
     private fun isStableJavaExecutable(path: Path): Boolean =
         path.exists() && ".gradle/caches" !in path.toString()
 
+    private fun assertPromptReferencesPatchFile(prompt: String, expectedPatchText: String): Path {
+        assertTrue(prompt, "## Commit Message\nRead this selected commit patch file before writing the commit message:" in prompt)
+        val patchPath = Regex("(?m)^.*commit-ninja-selected-changes-.*\\.patch$")
+            .find(prompt)
+            ?.value
+            ?.let(Path::of)
+        assertNotNull(prompt, patchPath)
+        val path = requireNotNull(patchPath)
+        assertFalse(path.toString(), path.exists())
+        assertFalse(prompt, expectedPatchText in prompt)
+        return path
+    }
+
     object FakeCommitMessageAcpServer {
         @JvmStatic
         fun main(args: Array<String>) {
@@ -591,7 +604,12 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
                         )
                     }
                     "session/prompt" -> {
-                        sawCheckedChange = "src/main/kotlin/App.kt" in message &&
+                        val patchPath = promptPatchPath(message)
+                        val patchContent = patchPath
+                            ?.takeIf { it.exists() }
+                            ?.let { Files.readString(it, StandardCharsets.UTF_8) }
+                            .orEmpty()
+                        sawCheckedChange = "src/main/kotlin/App.kt" in patchContent &&
                             "Write a concise Conventional Commit message." in message
                         val chunks = if (sawCheckedChange) responseChunks else listOf("invalid")
                         chunks.forEach { chunk ->
@@ -619,6 +637,12 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
 
         private fun requestId(message: String): String? =
             Regex(""""id":("[^"]+"|\d+)""").find(message)?.groupValues?.get(1)
+
+        private fun promptPatchPath(message: String): Path? =
+            Regex("""/[^"\\]*commit-ninja-selected-changes-[^"\\]*\.patch""")
+                .find(message)
+                ?.value
+                ?.let(Path::of)
 
         private fun jsonString(value: String): String =
             value
