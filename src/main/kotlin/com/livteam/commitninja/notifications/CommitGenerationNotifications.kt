@@ -15,6 +15,7 @@ object CommitGenerationNotifications {
         val titleKey = when (type) {
             GenerationFailureType.SETTINGS_MISSING -> "notification.settingsMissing.title"
             GenerationFailureType.NO_CHECKED_CHANGES -> "notification.noCheckedChanges.title"
+            GenerationFailureType.COMMIT_LIST_TOO_LARGE -> "notification.commitListTooLarge.title"
             GenerationFailureType.LAUNCH_FAILED -> "notification.launchFailed.title"
             GenerationFailureType.PROTOCOL_FAILED -> "notification.protocolFailed.title"
             GenerationFailureType.TIMEOUT -> "notification.timeout.title"
@@ -25,6 +26,7 @@ object CommitGenerationNotifications {
         val contentKey = when (type) {
             GenerationFailureType.SETTINGS_MISSING -> "notification.settingsMissing.content"
             GenerationFailureType.NO_CHECKED_CHANGES -> "notification.noCheckedChanges.content"
+            GenerationFailureType.COMMIT_LIST_TOO_LARGE -> "notification.commitListTooLarge.content"
             else -> "notification.genericFailure.content"
         }
         val notification = NotificationGroupManager.getInstance()

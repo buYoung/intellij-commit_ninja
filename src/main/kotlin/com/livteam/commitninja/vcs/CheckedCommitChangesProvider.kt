@@ -10,10 +10,16 @@ import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ContentRevision
 import com.intellij.openapi.vcs.history.VcsRevisionNumber
 import com.livteam.commitninja.generation.CheckedChangeContext
+import com.livteam.commitninja.settings.CommitChangeCollectionSettings
+import com.livteam.commitninja.settings.CommitChangeCollectionSettings.PatchExcludedFileRegex
 import java.io.IOException
 import java.nio.file.Files
 
-class CheckedCommitChangesProvider {
+class CheckedCommitChangesProvider(
+    private val patchExcludedFilePatternsProvider: () -> List<PatchExcludedFileRegex> = {
+        CommitChangeCollectionSettings.getInstance().resolvedPatchExcludedFilePatterns
+    },
+) {
     fun hasCheckedChanges(event: AnActionEvent): Boolean =
         hasCheckedChangesFromSources(
             actionChanges = event.getData(VcsDataKeys.CHANGES),
@@ -95,11 +101,58 @@ class CheckedCommitChangesProvider {
         if (remainingDetailChars <= 0) {
             return CheckedChangeContext(path = path, status = status, detail = DETAIL_OMITTED_MESSAGE, isDetailOmitted = true)
         }
-        val detail = buildContentContext(remainingDetailChars)
+        val detail = buildPatchContext(path, remainingDetailChars)
         return CheckedChangeContext(path = path, status = status, detail = detail.text, isDetailOmitted = detail.isOmitted)
     }
 
-    private fun Change.buildContentContext(detailBudgetChars: Int): CollectedDetail {
+    private fun Change.buildPatchContext(path: String, detailBudgetChars: Int): CollectedDetail {
+        val patchExclusionReason = patchExclusionReason(path)
+        if (patchExclusionReason != null) {
+            return CollectedDetail(text = "<patch omitted: $patchExclusionReason>", isOmitted = false)
+        }
+
+        val beforeContent = beforeRevision?.readContentForPatch()
+        val afterContent = afterRevision?.readContentForPatch()
+        if (beforeContent == null && beforeRevision != null) {
+            return CollectedDetail(text = "<patch omitted: before content is binary or unavailable>", isOmitted = false)
+        }
+        if (afterContent == null && afterRevision != null) {
+            return CollectedDetail(text = "<patch omitted: after content is binary or unavailable>", isOmitted = false)
+        }
+
+        val beforeText = beforeContent.orEmpty()
+        val afterText = afterContent.orEmpty()
+        val sourceChars = beforeText.length + afterText.length
+        if (sourceChars > MAX_PATCH_SOURCE_CHARS) {
+            return CollectedDetail(
+                text = "<patch omitted: combined before/after content is $sourceChars chars, limit is $MAX_PATCH_SOURCE_CHARS>",
+                isOmitted = false,
+            )
+        }
+
+        val beforeLines = beforeText.patchLines()
+        val afterLines = afterText.patchLines()
+        val sourceLines = beforeLines.size + afterLines.size
+        if (sourceLines > MAX_PATCH_SOURCE_LINES) {
+            return CollectedDetail(
+                text = "<patch omitted: combined before/after content is $sourceLines lines, limit is $MAX_PATCH_SOURCE_LINES>",
+                isOmitted = false,
+            )
+        }
+
+        return buildBoundedPatchContext(
+            patch = buildUnifiedPatch(
+                path = path,
+                beforeExists = beforeRevision != null,
+                afterExists = afterRevision != null,
+                beforeLines = beforeLines,
+                afterLines = afterLines,
+            ),
+            detailBudgetChars = detailBudgetChars,
+        )
+    }
+
+    private fun buildBoundedPatchContext(patch: String, detailBudgetChars: Int): CollectedDetail {
         val detail = StringBuilder()
         var remainingChars = detailBudgetChars
         var isOmitted = false
@@ -117,23 +170,7 @@ class CheckedCommitChangesProvider {
             }
         }
 
-        fun appendLineWithinBudget(line: String = "") {
-            appendWithinBudget("$line\n")
-        }
-
-        appendLineWithinBudget("Before content:")
-        if (remainingChars > 0) {
-            appendLineWithinBudget(beforeRevision.readContentOrPlaceholder(remainingChars))
-        } else {
-            isOmitted = true
-        }
-        appendLineWithinBudget()
-        appendLineWithinBudget("After content:")
-        if (remainingChars > 0) {
-            appendLineWithinBudget(afterRevision.readContentOrPlaceholder(remainingChars))
-        } else {
-            isOmitted = true
-        }
+        appendWithinBudget(patch)
 
         if (isOmitted) {
             detail.appendLine()
@@ -142,19 +179,92 @@ class CheckedCommitChangesProvider {
         return CollectedDetail(text = detail.toString(), isOmitted = isOmitted)
     }
 
-    private fun ContentRevision?.readContentOrPlaceholder(remainingDetailChars: Int): String {
-        if (this == null) return "<not available>"
+    private fun ContentRevision.readContentForPatch(): String? {
         return try {
-            content?.limitRevisionContent(remainingDetailChars) ?: "<binary or empty content>"
+            content
         } catch (_: VcsException) {
-            "<content unavailable>"
+            null
         }
     }
 
-    private fun String.limitRevisionContent(remainingDetailChars: Int): String {
-        val revisionLimit = minOf(MAX_REVISION_CONTENT_CHARS, remainingDetailChars)
-        if (length <= revisionLimit) return this
-        return take(revisionLimit) + "\n<revision content truncated at $revisionLimit chars>"
+    private fun String.patchLines(): List<String> {
+        val normalized = replace("\r\n", "\n").replace('\r', '\n')
+        if (normalized.isEmpty()) return emptyList()
+        val lines = normalized.split('\n')
+        return if (normalized.endsWith('\n')) lines.dropLast(1) else lines
+    }
+
+    private fun buildUnifiedPatch(
+        path: String,
+        beforeExists: Boolean,
+        afterExists: Boolean,
+        beforeLines: List<String>,
+        afterLines: List<String>,
+    ): String {
+        val oldPath = if (beforeExists) "a/$path" else "/dev/null"
+        val newPath = if (afterExists) "b/$path" else "/dev/null"
+        val operations = diffOperations(beforeLines, afterLines)
+        return buildString {
+            appendLine("--- $oldPath")
+            appendLine("+++ $newPath")
+            appendLine("@@ -1,${beforeLines.size} +1,${afterLines.size} @@")
+            for (operation in operations) {
+                append(operation.prefix)
+                appendLine(operation.line)
+            }
+        }
+    }
+
+    private fun diffOperations(beforeLines: List<String>, afterLines: List<String>): List<DiffOperation> {
+        val lcsLengths = Array(beforeLines.size + 1) { IntArray(afterLines.size + 1) }
+        for (beforeIndex in beforeLines.indices.reversed()) {
+            for (afterIndex in afterLines.indices.reversed()) {
+                lcsLengths[beforeIndex][afterIndex] = if (beforeLines[beforeIndex] == afterLines[afterIndex]) {
+                    lcsLengths[beforeIndex + 1][afterIndex + 1] + 1
+                } else {
+                    maxOf(lcsLengths[beforeIndex + 1][afterIndex], lcsLengths[beforeIndex][afterIndex + 1])
+                }
+            }
+        }
+
+        val operations = mutableListOf<DiffOperation>()
+        var beforeIndex = 0
+        var afterIndex = 0
+        while (beforeIndex < beforeLines.size && afterIndex < afterLines.size) {
+            when {
+                beforeLines[beforeIndex] == afterLines[afterIndex] -> {
+                    operations += DiffOperation(' ', beforeLines[beforeIndex])
+                    beforeIndex++
+                    afterIndex++
+                }
+                lcsLengths[beforeIndex + 1][afterIndex] >= lcsLengths[beforeIndex][afterIndex + 1] -> {
+                    operations += DiffOperation('-', beforeLines[beforeIndex])
+                    beforeIndex++
+                }
+                else -> {
+                    operations += DiffOperation('+', afterLines[afterIndex])
+                    afterIndex++
+                }
+            }
+        }
+        while (beforeIndex < beforeLines.size) {
+            operations += DiffOperation('-', beforeLines[beforeIndex])
+            beforeIndex++
+        }
+        while (afterIndex < afterLines.size) {
+            operations += DiffOperation('+', afterLines[afterIndex])
+            afterIndex++
+        }
+        return operations
+    }
+
+    private fun patchExclusionReason(path: String): String? {
+        val normalizedPath = path.replace('\\', '/')
+        val fileName = normalizedPath.substringAfterLast('/')
+        val matchedPattern = patchExcludedFilePatternsProvider().firstOrNull { pattern ->
+            pattern.regex.matches(fileName)
+        }
+        return matchedPattern?.let { "file name matches excluded patch regex '${it.pattern}'" }
     }
 
     private fun currentGitBranchName(project: Project): String? {
@@ -178,14 +288,20 @@ class CheckedCommitChangesProvider {
     }
 
     private companion object {
-        const val MAX_REVISION_CONTENT_CHARS = 12_000
-        const val MAX_COLLECTED_CHANGE_DETAIL_CHARS = 60_000
+        const val MAX_COLLECTED_CHANGE_DETAIL_CHARS = 200_000
+        const val MAX_PATCH_SOURCE_CHARS = 200_000
+        const val MAX_PATCH_SOURCE_LINES = 20_000
         const val DETAIL_OMITTED_MESSAGE = "<checked-change detail omitted because the collection detail budget was exhausted>"
     }
 
     private data class CollectedDetail(
         val text: String,
         val isOmitted: Boolean,
+    )
+
+    private data class DiffOperation(
+        val prefix: Char,
+        val line: String,
     )
 
     private class UnversionedContentRevision(private val filePath: FilePath) : ContentRevision {

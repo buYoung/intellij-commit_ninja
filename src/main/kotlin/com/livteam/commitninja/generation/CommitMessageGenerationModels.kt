@@ -20,6 +20,7 @@ data class CommitMessageGenerationRequest(
     val changes: List<CheckedChangeContext>,
     val workingDirectory: String?,
     val languagePromptInstruction: String? = null,
+    val maxCommitListSize: Int? = null,
 ) {
     constructor(
         profile: AgentProfile,
@@ -31,6 +32,7 @@ data class CommitMessageGenerationRequest(
         changes: List<CheckedChangeContext>,
         workingDirectory: String?,
         languagePromptInstruction: String? = null,
+        maxCommitListSize: Int? = null,
     ) : this(
         profileId = profile.profileId,
         profileDisplayName = profile.displayName,
@@ -42,6 +44,7 @@ data class CommitMessageGenerationRequest(
         changes = changes,
         workingDirectory = workingDirectory,
         languagePromptInstruction = languagePromptInstruction,
+        maxCommitListSize = maxCommitListSize,
     )
 
     @Deprecated("Use profileId and profileDisplayName for generation diagnostics.")
@@ -62,6 +65,7 @@ data class GenerationDiagnostic(
 enum class GenerationFailureType {
     SETTINGS_MISSING,
     NO_CHECKED_CHANGES,
+    COMMIT_LIST_TOO_LARGE,
     LAUNCH_FAILED,
     PROTOCOL_FAILED,
     TIMEOUT,

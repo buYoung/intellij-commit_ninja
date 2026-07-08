@@ -5,6 +5,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.livteam.commitninja.acp.AcpClient
 import com.livteam.commitninja.settings.AgentCommandLine
+import com.livteam.commitninja.settings.CommitChangeCollectionSettings
 import com.livteam.commitninja.settings.CommitGenerationSettings
 import com.livteam.commitninja.settings.CommitPromptSettings
 
@@ -27,8 +28,20 @@ class CommitMessageGenerationService(private val project: Project) {
                 GenerationDiagnostic(GenerationFailureType.NO_CHECKED_CHANGES, "No checked changes were supplied."),
             )
         }
+        val maxCommitListSize = request.maxCommitListSize
+        if (maxCommitListSize != null && request.changes.size > maxCommitListSize) {
+            val diagnosticMessage =
+                "Checked change count ${request.changes.size} exceeds maximum checked changes $maxCommitListSize."
+            LOG.warn(
+                "Commit message generation rejected: type=${GenerationFailureType.COMMIT_LIST_TOO_LARGE}, " +
+                    "checkedChangeCount=${request.changes.size}, maxCommitListSize=$maxCommitListSize",
+            )
+            return CommitMessageGenerationResult.Failure(
+                GenerationDiagnostic(GenerationFailureType.COMMIT_LIST_TOO_LARGE, diagnosticMessage),
+            )
+        }
         LOG.info(
-            "Starting commit message generation: profile=${request.profileId}, model=${request.model.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
+            "Starting commit message generation: profile=${request.profileId}, model=${request.model.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}, maxCommitListSize=${request.maxCommitListSize ?: "unlimited"}",
         )
         val prompt = buildPrompt(request)
         LOG.info(
@@ -47,6 +60,7 @@ class CommitMessageGenerationService(private val project: Project) {
 
     fun requestFromSettings(changes: List<CheckedChangeContext>, branchName: String?): CommitMessageGenerationResult? {
         val settings = CommitGenerationSettings.getInstance()
+        val changeCollectionSettings = CommitChangeCollectionSettings.getInstance()
         val promptSettings = CommitPromptSettings.getInstance()
         val settingsDiagnostic = settings.configurationDiagnostic()
         if (!settingsDiagnostic.isConfigured) {
@@ -72,9 +86,10 @@ class CommitMessageGenerationService(private val project: Project) {
             branchName = branchName,
             changes = changes,
             workingDirectory = project.basePath,
+            maxCommitListSize = changeCollectionSettings.resolvedMaxCommitListSize,
         )
         LOG.info(
-            "Created commit generation request from settings: profile=${request.profileId}, model=${request.model.orEmpty()}, branch=${branchName.orEmpty()}, checkedChangeCount=${changes.size}",
+            "Created commit generation request from settings: profile=${request.profileId}, model=${request.model.orEmpty()}, branch=${branchName.orEmpty()}, checkedChangeCount=${changes.size}, maxCommitListSize=${request.maxCommitListSize ?: "unlimited"}",
         )
         return generate(request)
     }
@@ -87,6 +102,8 @@ class CommitMessageGenerationService(private val project: Project) {
         prompt.appendBoundedLine(
             "The first line must be a Conventional Commit header, for example: feat(scope): concise summary or fix(scope)",
         )
+        prompt.appendBoundedLine("Always include a blank line and at least one numbered body item after the header.")
+        prompt.appendBoundedLine("Never return only the Conventional Commit header.")
         prompt.appendBoundedLine()
         prompt.appendBoundedLine("GIT_BRANCH_NAME=${request.branchName.orEmpty()}")
         prompt.appendBoundedLine("TICKET_ID=${request.branchName.derivedTicketId().orEmpty()}")
@@ -94,11 +111,11 @@ class CommitMessageGenerationService(private val project: Project) {
             prompt.appendBoundedLine("Preferred model: $it")
         }
         prompt.appendBoundedLine()
-        prompt.appendBoundedLine("Checked changes:")
+        prompt.appendBoundedLine("Git patch for checked changes:")
         val omittedDetailCount = request.changes.count { it.isDetailOmitted }
         if (omittedDetailCount > 0) {
             prompt.appendBoundedLine(
-                "Checked-change detail omitted for $omittedDetailCount file(s) because the collection detail budget was exhausted.",
+                "Checked-change detail was truncated for $omittedDetailCount file(s). See per-file patch notes when details are omitted.",
             )
         }
         for (change in request.changes) {
@@ -163,8 +180,8 @@ class CommitMessageGenerationService(private val project: Project) {
 
     private companion object {
         val LOG = Logger.getInstance(CommitMessageGenerationService::class.java)
-        const val MAX_COMMIT_PROMPT_CHARS = 80_000
-        const val MAX_CHANGE_DETAIL_CHARS = 12_000
+        const val MAX_COMMIT_PROMPT_CHARS = 200_000
+        const val MAX_CHANGE_DETAIL_CHARS = 200_000
         const val MAX_FAILURE_DIAGNOSTIC_CHARS = 2_000
         const val COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER = "\$COMMIT_LANGUAGE_INSTRUCTION"
         val RESERVED_BRANCH_NAMES = setOf("main", "develop", "master", "staging")

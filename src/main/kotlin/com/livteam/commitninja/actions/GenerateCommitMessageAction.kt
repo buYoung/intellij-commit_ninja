@@ -15,6 +15,7 @@ import com.livteam.commitninja.generation.GenerationDiagnostic
 import com.livteam.commitninja.generation.GenerationFailureType
 import com.livteam.commitninja.generation.CommitMessageGenerationService
 import com.livteam.commitninja.notifications.CommitGenerationNotifications
+import com.livteam.commitninja.settings.CommitChangeCollectionSettings
 import com.livteam.commitninja.settings.CommitGenerationSettings
 import com.livteam.commitninja.ui.CommitMessageApplier
 import com.livteam.commitninja.vcs.CheckedCommitChangesProvider
@@ -56,6 +57,20 @@ class GenerateCommitMessageAction : DumbAwareAction(
         val settingsDiagnostic = CommitGenerationSettings.getInstance().configurationDiagnostic()
         if (!settingsDiagnostic.isConfigured) {
             CommitGenerationNotifications.notifyFailure(project, GenerationFailureType.SETTINGS_MISSING)
+            return
+        }
+        val maxCommitListSize = CommitChangeCollectionSettings.getInstance().resolvedMaxCommitListSize
+        val preflightCheckedChangeCount = changesProvider.checkedChangeCount(event)
+        if (maxCommitListSize != null &&
+            preflightCheckedChangeCount != null &&
+            preflightCheckedChangeCount > maxCommitListSize
+        ) {
+            LOG.warn(
+                "Commit Ninja diagnostic: executionSkipped entryPoint=GenerateCommitMessageAction.actionPerformed " +
+                    "reason=COMMIT_LIST_TOO_LARGE checkedChangeCount=$preflightCheckedChangeCount " +
+                    "maxCommitListSize=$maxCommitListSize",
+            )
+            CommitGenerationNotifications.notifyFailure(project, GenerationFailureType.COMMIT_LIST_TOO_LARGE)
             return
         }
         val changes = changesProvider.collect(event)
