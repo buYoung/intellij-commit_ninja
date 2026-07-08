@@ -313,8 +313,6 @@ class AcpClient(private val project: Project) {
     private fun collectText(update: SessionUpdate, transcript: StringBuilder) {
         when (update) {
             is SessionUpdate.AgentMessageChunk -> collectContentBlock(update.content, transcript)
-            is SessionUpdate.AgentThoughtChunk -> collectContentBlock(update.content, transcript)
-            is SessionUpdate.ToolCall -> update.content.orEmpty().forEach { appendTranscriptText(transcript, it.toString()) }
             else -> Unit
         }
     }

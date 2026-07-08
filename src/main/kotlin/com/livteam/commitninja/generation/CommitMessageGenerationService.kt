@@ -166,12 +166,20 @@ class CommitMessageGenerationService(private val project: Project) {
     private fun writeSelectedChangesPatchFile(request: CommitMessageGenerationRequest): SelectedChangesPatchFile? {
         val content = buildSelectedChangesPatchContent(request)
         return try {
-            val path = Files.createTempFile(TEMP_PATCH_FILE_PREFIX, TEMP_PATCH_FILE_SUFFIX)
+            val workingDirectory = request.workingDirectory
+                ?.takeIf { it.isNotBlank() }
+                ?.let(Path::of)
+                ?.takeIf { Files.isDirectory(it) && Files.isWritable(it) }
+            val path = if (workingDirectory != null) {
+                Files.createTempFile(workingDirectory, TEMP_PATCH_FILE_PREFIX, TEMP_PATCH_FILE_SUFFIX)
+            } else {
+                Files.createTempFile(TEMP_PATCH_FILE_PREFIX, TEMP_PATCH_FILE_SUFFIX)
+            }
             Files.writeString(path, content, StandardCharsets.UTF_8)
             path.toFile().deleteOnExit()
             LOG.info(
                 "Selected commit patch file written: path=${path.toAbsolutePath()}, chars=${content.length}, " +
-                    "lines=${content.lineCount()}, tempDirectory=${System.getProperty("java.io.tmpdir").orEmpty()}",
+                    "lines=${content.lineCount()}, tempDirectory=${path.parent?.toAbsolutePath().toString()}",
             )
             if (LOG.isDebugEnabled) {
                 CommitNinjaDiagnosticFiles.logDebugText(
@@ -283,7 +291,7 @@ class CommitMessageGenerationService(private val project: Project) {
         const val MAX_COMMIT_PROMPT_CHARS = 200_000
         const val MAX_CHANGE_DETAIL_CHARS = 200_000
         const val MAX_FAILURE_DIAGNOSTIC_CHARS = 2_000
-        const val TEMP_PATCH_FILE_PREFIX = "commit-ninja-selected-changes-"
+        const val TEMP_PATCH_FILE_PREFIX = ".commit-ninja-selected-changes-"
         const val TEMP_PATCH_FILE_SUFFIX = ".patch"
         const val COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER = "\$COMMIT_LANGUAGE_INSTRUCTION"
         const val GIT_BRANCH_NAME_PLACEHOLDER = "\$GIT_BRANCH_NAME"
