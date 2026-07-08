@@ -4,7 +4,8 @@ object CommitMessageOutputParser {
     private val candidatePrefix = Regex("^\\s*(candidate|option|message)\\s*\\d*\\s*[:.)-]\\s*", RegexOption.IGNORE_CASE)
     private val explanatoryPrefix = Regex("^\\s*(here is|here's|commit message|generated commit message)\\b.*", RegexOption.IGNORE_CASE)
     private val conventionalCommitHeader = Regex(
-        "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\([^\\r\\n()]+\\))?!?:\\s+\\S.*$",
+        "^(?:(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\([^\\r\\n()]+\\))?!?:\\s+\\S.*|" +
+            "(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\\([^\\r\\n()]+\\)!?)$",
     )
     private val multipleCandidateMarker = Regex("(?im)^\\s*(option|candidate)\\s+2\\b")
 

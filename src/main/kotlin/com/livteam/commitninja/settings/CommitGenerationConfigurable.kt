@@ -328,15 +328,13 @@ class CommitGenerationConfigurable : SearchableConfigurable {
             modelStatusLabel.text = MyBundle["settings.agent.modelStatus.profileRequired"]
             return
         }
-        val command = commandOverrideField.text.trim().ifBlank { profile.defaultCommand }
+        val command = modelLoadCommand(profile)
         if (command.isBlank()) {
             loadModelsButton.isEnabled = true
             modelStatusLabel.text = MyBundle["settings.agent.modelStatus.commandRequired"]
             return
         }
-        val arguments = AgentCommandLine.splitArguments(
-            argumentsOverrideField.text.trim().ifBlank { profile.defaultArguments },
-        )
+        val arguments = modelLoadArguments(profile)
         val selectedModelBeforeLoad = selectedModel()
         val requestGeneration = modelLoadGeneration.incrementAndGet()
         loadModelsButton.isEnabled = false
@@ -351,10 +349,8 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                     if (
                         requestGeneration != modelLoadGeneration.get() ||
                         profile != selectedProfile() ||
-                        command != commandOverrideField.text.trim().ifBlank { profile.defaultCommand } ||
-                        arguments != AgentCommandLine.splitArguments(
-                            argumentsOverrideField.text.trim().ifBlank { profile.defaultArguments },
-                        )
+                        command != modelLoadCommand(profile) ||
+                        arguments != modelLoadArguments(profile)
                     ) {
                         return@Runnable
                     }
@@ -365,6 +361,8 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                             LOG.info("Loaded ACP model options in settings: profile=${profile.name}, count=${models.size}")
                             modelStatusLabel.text = if (models.isEmpty()) {
                                 MyBundle["settings.agent.modelStatus.empty"]
+                            } else if (generationCommand(profile).isBlank()) {
+                                MyBundle["settings.agent.modelStatus.loadedGenerationCommandRequired", models.size]
                             } else {
                                 MyBundle["settings.agent.modelStatus.loaded", models.size]
                             }
@@ -391,6 +389,17 @@ class CommitGenerationConfigurable : SearchableConfigurable {
 
     private fun normalizedArgumentsOverride(profile: AgentProfile, value: String): String =
         value.trim().takeUnless { it.isBlank() || it == profile.defaultArguments }.orEmpty()
+
+    private fun generationCommand(profile: AgentProfile): String =
+        commandOverrideField.text.trim().ifBlank { profile.defaultCommand }
+
+    private fun modelLoadCommand(profile: AgentProfile): String =
+        commandOverrideField.text.trim().ifBlank { profile.defaultModelCommand }
+
+    private fun modelLoadArguments(profile: AgentProfile): List<String> =
+        AgentCommandLine.splitArguments(
+            argumentsOverrideField.text.trim().ifBlank { profile.defaultModelArguments },
+        )
 
     private fun modelItems(): List<String> =
         availableModelOptions

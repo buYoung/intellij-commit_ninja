@@ -43,6 +43,13 @@ class CheckedCommitChangesProviderTest {
         )
 
         assertEquals(listOf("src/Included.kt"), contexts.map { it.path })
+        assertEquals(
+            1,
+            provider.checkedChangeCountFromSources(
+                actionChanges = arrayOf(uncheckedActionChange),
+                includedChanges = listOf(includedChange),
+            ),
+        )
     }
 
     @Test
@@ -61,6 +68,26 @@ class CheckedCommitChangesProviderTest {
             provider.hasCheckedChangesFromSources(
                 actionChanges = arrayOf(uncheckedActionChange),
                 includedChanges = emptyList(),
+            ),
+        )
+        assertEquals(
+            0,
+            provider.checkedChangeCountFromSources(
+                actionChanges = arrayOf(uncheckedActionChange),
+                includedChanges = emptyList(),
+            ),
+        )
+    }
+
+    @Test
+    fun `checked change count is absent when action and workflow data are absent`() {
+        val provider = CheckedCommitChangesProvider()
+
+        assertEquals(
+            null,
+            provider.checkedChangeCountFromSources(
+                actionChanges = null,
+                includedChanges = null,
             ),
         )
     }

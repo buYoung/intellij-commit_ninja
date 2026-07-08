@@ -2,6 +2,7 @@ package com.livteam.commitninja.generation
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.livteam.commitninja.settings.AgentProfile
+import com.livteam.commitninja.settings.CommitGenerationSettings
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.nio.file.Path
@@ -41,6 +42,167 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             model = "haiku",
             expectedMessage = "feat: update app output",
         )
+    }
+
+    fun testAcpAgentMessageChunksAreConcatenatedWithoutArtificialNewlines() {
+        val expectedMessage = """
+            fix(모델 목록 로딩): 프로필별 모델 목록 로딩 개선
+            
+            1. 프로필별 모델 목록을 올바르게 조회
+            2. ACP 응답 chunk 경계를 그대로 보존
+        """.trimIndent()
+
+        assertGeneratesCommitMessageWithModel(
+            profile = AgentProfile.CODEX_ACP,
+            model = "gpt-5.4-mini",
+            expectedMessage = expectedMessage,
+            responseChunks = listOf(
+                "fix",
+                "(",
+                "모",
+                "델",
+                " 목록",
+                " 로",
+                "딩",
+                "): 프로필별 모델 목록 로딩 개선",
+                "\n\n",
+                "1",
+                ". 프로필별 모델 목록을 올바르게 조회",
+                "\n",
+                "2",
+                ". ACP 응답 chunk 경계를 그대로 보존",
+            ),
+        )
+    }
+
+    fun testRequestFromSettingsUsesCodexAdapterDefaultGenerationCommand() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+        state.command = ""
+        state.arguments = ""
+        state.model = "gpt-5.4-mini"
+        var capturedRequest: CommitMessageGenerationRequest? = null
+        val service = CommitMessageGenerationService(project) { request, _ ->
+            capturedRequest = request
+            CommitMessageGenerationResult.Success("feat: update app output")
+        }
+
+        val result = service.requestFromSettings(
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            branchName = "feature/acp-defaults",
+        )
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+        val request = requireNotNull(capturedRequest)
+        assertEquals(AgentProfile.CODEX_ACP, request.profile)
+        assertEquals("npx", request.command)
+        assertEquals(listOf("-y", "@zed-industries/codex-acp"), request.arguments)
+        assertEquals("gpt-5.4-mini", request.model)
+        assertFalse(
+            "Generation must not reuse the Codex model loading command.",
+            request.arguments == listOf("debug", "models", "--bundled"),
+        )
+    }
+
+    fun testReservedBranchNamesDoNotBecomeTicketIds() {
+        listOf("main", "develop", "master", "staging", "MAIN").forEach { branchName ->
+            val state = CommitGenerationSettings.getInstance().state
+            state.profileName = AgentProfile.CODEX_ACP.name
+            state.command = ""
+            state.arguments = ""
+            state.model = "gpt-5.4-mini"
+            var capturedPrompt: String? = null
+            val service = CommitMessageGenerationService(project) { _, prompt ->
+                capturedPrompt = prompt
+                CommitMessageGenerationResult.Success("fix(scope): summary")
+            }
+
+            val result = service.requestFromSettings(
+                changes = listOf(
+                    CheckedChangeContext(
+                        path = "src/main/kotlin/App.kt",
+                        status = "MODIFIED",
+                        detail = "+println(\"new\")",
+                    ),
+                ),
+                branchName = branchName,
+            )
+
+            assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+            val prompt = requireNotNull(capturedPrompt)
+            assertTrue(prompt, "GIT_BRANCH_NAME=$branchName" in prompt)
+            assertTrue(prompt, "TICKET_ID=\n" in prompt)
+        }
+    }
+
+    fun testNonReservedBranchNameBecomesTicketIdPromptField() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+        state.command = ""
+        state.arguments = ""
+        state.model = "gpt-5.4-mini"
+        var capturedPrompt: String? = null
+        val service = CommitMessageGenerationService(project) { _, prompt ->
+            capturedPrompt = prompt
+            CommitMessageGenerationResult.Success("fix(scope): summary")
+        }
+
+        val result = service.requestFromSettings(
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            branchName = "feature/ACP-402-model-list",
+        )
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+        val prompt = requireNotNull(capturedPrompt)
+        assertTrue(prompt, "GIT_BRANCH_NAME=feature/ACP-402-model-list" in prompt)
+        assertTrue(prompt, "TICKET_ID=feature/ACP-402-model-list" in prompt)
+    }
+
+    fun testFailureInputDiagnosticUsesInputPromptSection() {
+        val request = CommitMessageGenerationRequest(
+            profile = AgentProfile.CODEX_ACP,
+            command = "missing",
+            arguments = emptyList(),
+            model = "gpt-5.4-mini",
+            userPrompt = "Write a concise Conventional Commit message.",
+            branchName = "feature/acp-e2e",
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            workingDirectory = System.getProperty("user.dir"),
+        )
+        val method = CommitMessageGenerationService::class.java.getDeclaredMethod(
+            "failureInputDiagnostic",
+            CommitMessageGenerationRequest::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+
+        val diagnostic = method.invoke(
+            CommitMessageGenerationService(project),
+            request,
+            "generated prompt body",
+        ) as String
+
+        assertTrue(diagnostic, "input prompt:" in diagnostic)
+        assertTrue(diagnostic, "generated prompt body" in diagnostic)
+        assertFalse(diagnostic, "promptPreview=" in diagnostic)
     }
 
     fun testExplicitClaudeAcpLaunchFailureReportsUsefulDiagnostic() {
@@ -140,7 +302,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         val diagnostic = (result as CommitMessageGenerationResult.Failure).diagnostic
         assertEquals(GenerationFailureType.PARSE_FAILED, diagnostic.type)
         assertTrue(diagnostic.message, "outputChars=" in diagnostic.message)
-        assertTrue(diagnostic.message, "rawOutputPreview=" in diagnostic.message)
+        assertTrue(diagnostic.message, "output prompt:" in diagnostic.message)
         assertTrue(diagnostic.message, "cannot produce a conventional commit" in diagnostic.message)
         assertTrue(diagnostic.message, "diagnostic-marker-" in diagnostic.message)
         assertTrue(diagnostic.message, diagnostic.message.length < 2_500)
@@ -150,6 +312,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         profile: AgentProfile,
         model: String,
         expectedMessage: String,
+        responseChunks: List<String> = listOf(expectedMessage),
     ) {
         val request = CommitMessageGenerationRequest(
             profile = profile,
@@ -159,8 +322,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
                 System.getProperty("java.class.path"),
                 FakeCommitMessageAcpServer::class.java.name,
                 model,
-                expectedMessage,
-            ),
+            ) + responseChunks,
             model = model,
             userPrompt = "Write a concise Conventional Commit message.",
             branchName = "feature/acp-e2e",
@@ -210,7 +372,7 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             val input = BufferedInputStream(System.`in`)
             val output = BufferedOutputStream(System.out)
             val expectedModel = args.getOrNull(0) ?: error("expected model argument is required")
-            val commitMessage = args.getOrNull(1) ?: "feat: update app output"
+            val responseChunks = args.drop(1).ifEmpty { listOf("feat: update app output") }
             var sawCheckedChange = false
             while (true) {
                 val message = readJsonLine(input) ?: return
@@ -245,18 +407,15 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
                     "session/prompt" -> {
                         sawCheckedChange = "src/main/kotlin/App.kt" in message &&
                             "Write a concise Conventional Commit message." in message
-                        writeMessage(
-                            output,
-                            if (sawCheckedChange) {
+                        val chunks = if (sawCheckedChange) responseChunks else listOf("invalid")
+                        chunks.forEach { chunk ->
+                            writeMessage(
+                                output,
                                 """
-                                {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"commit-e2e","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"${jsonString(commitMessage)}"}}}}
-                                """.trimIndent()
-                            } else {
-                                """
-                                {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"commit-e2e","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"invalid"}}}}
-                                """.trimIndent()
-                            },
-                        )
+                                {"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"commit-e2e","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"${jsonString(chunk)}"}}}}
+                                """.trimIndent(),
+                            )
+                        }
                         writeMessage(
                             output,
                             """

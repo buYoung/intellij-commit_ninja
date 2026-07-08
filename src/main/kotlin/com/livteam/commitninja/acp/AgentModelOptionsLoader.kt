@@ -14,10 +14,9 @@ object AgentModelOptionsLoader {
             "Starting ACP model load: profile=${profile.name}, command=$command, arguments=${arguments.joinToString(" ")}, workingDirectory=${workingDirectory.orEmpty()}",
         )
         val result = when (profile) {
-            AgentProfile.OPENCODE,
-            AgentProfile.CODEX_ACP,
-            AgentProfile.CLAUDE_AGENT_ACP,
-            -> loadConfiguredAcpModels(command, arguments, workingDirectory)
+            AgentProfile.OPENCODE -> AcpModelOptionsLoader.loadOpencodeModels(command, workingDirectory)
+            AgentProfile.CODEX_ACP -> AcpModelOptionsLoader.loadCodexBundledModels(command, workingDirectory)
+            AgentProfile.CLAUDE_AGENT_ACP -> AcpModelOptionsLoader.loadClaudeBuiltInModels()
             AgentProfile.NONE -> Result.success(emptyList())
         }
         result.fold(
@@ -33,20 +32,6 @@ object AgentModelOptionsLoader {
         )
         return result
     }
-
-    private fun loadConfiguredAcpModels(
-        command: String,
-        arguments: List<String>,
-        workingDirectory: String?,
-    ): Result<List<String>> {
-        if (command.isBlank()) {
-            return Result.failure(IllegalStateException("Explicit ACP command configuration is required for this profile."))
-        }
-        return AcpModelOptionsLoader.load(command, arguments, workingDirectory)
-    }
-
-    private fun formatCommand(command: String, arguments: List<String>): String =
-        (listOf(command) + arguments).joinToString(" ")
 
     private val LOG = Logger.getInstance(AgentModelOptionsLoader::class.java)
 }

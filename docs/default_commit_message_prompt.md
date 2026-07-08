@@ -1,14 +1,14 @@
-Write one commit message from `$GIT_BRANCH_NAME` and a git patch.
+Write one commit message from `$GIT_BRANCH_NAME`, `$TICKET_ID`, and a git patch.
 
 Output only the commit message. No notes. No markdown fence.
 
 ## Format
 
-<Type>(<Scope>): <Ticket ID>
+<Type>(<Scope>)[: <Ticket ID>]
 
 1. <Change summary>
 
-Omit `: <Ticket ID>` when no ticket ID exists.
+Omit the entire `: <Ticket ID>` suffix when no ticket ID exists.
 
 ## Header
 
@@ -16,11 +16,10 @@ Type: choose one from `feat`, `fix`, `refactor`, `docs`, `style`, `test`, `chore
 
 Scope: short Korean phrase for the changed feature, screen, API, or work area. Avoid file and folder names unless they are the clearest names.
 
-Ticket ID: extract from `$GIT_BRANCH_NAME`.
+Ticket ID: use `$TICKET_ID` when it is not empty.
 
-- Jira-style ID -> `PROJ-123`
-- number-only ID -> `#402`
-- no ID -> omit it
+- `$TICKET_ID` is derived from `$GIT_BRANCH_NAME`.
+- no `$TICKET_ID` -> omit the `: <Ticket ID>` suffix
 
 ## Body
 

@@ -1,87 +1,106 @@
 package com.livteam.commitninja.acp
 
-import com.agentclientprotocol.annotations.UnstableApi
-import com.agentclientprotocol.client.Client
-import com.agentclientprotocol.client.ClientInfo
-import com.agentclientprotocol.client.ClientSession
-import com.agentclientprotocol.common.ClientSessionOperations
-import com.agentclientprotocol.common.SessionCreationParameters
-import com.agentclientprotocol.model.ClientCapabilities
-import com.agentclientprotocol.model.Implementation
-import com.agentclientprotocol.model.PermissionOption
-import com.agentclientprotocol.model.RequestPermissionOutcome
-import com.agentclientprotocol.model.RequestPermissionResponse
-import com.agentclientprotocol.model.SessionConfigOption
-import com.agentclientprotocol.model.SessionConfigOptionCategory
-import com.agentclientprotocol.model.SessionConfigSelectOptions
-import com.agentclientprotocol.model.SessionUpdate
-import com.agentclientprotocol.protocol.Protocol
-import com.agentclientprotocol.transport.StdioTransport
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 object AcpModelOptionsLoader {
-    fun load(
+    fun loadOpencodeModels(
+        command: String,
+        workingDirectory: String?,
+    ): Result<List<String>> = loadCommandModels(
+        command = command,
+        arguments = listOf("models"),
+        workingDirectory = workingDirectory,
+        parser = ::parseLineModels,
+    )
+
+    fun loadCodexBundledModels(
+        command: String,
+        workingDirectory: String?,
+    ): Result<List<String>> = loadCommandModels(
+        command = command,
+        arguments = listOf("debug", "models", "--bundled"),
+        workingDirectory = workingDirectory,
+        parser = ::parseCodexBundledModels,
+    )
+
+    fun loadClaudeBuiltInModels(): Result<List<String>> = Result.success(CLAUDE_BUILT_IN_MODELS)
+
+    private fun loadCommandModels(
         command: String,
         arguments: List<String>,
         workingDirectory: String?,
+        parser: (String) -> List<String>,
     ): Result<List<String>> {
+        if (command.isBlank()) {
+            return Result.failure(IllegalStateException("Explicit model list command configuration is required for this profile."))
+        }
+
+        val fullCommand = listOf(command) + arguments
         LOG.info(
-            "Starting ACP config model load through Kotlin SDK: command=${formatCommand(command, arguments)}, workingDirectory=${workingDirectory.orEmpty()}",
+            "Starting ACP profile model load: command=${formatCommand(fullCommand)}, workingDirectory=${workingDirectory.orEmpty()}",
         )
         val process = try {
-            ProcessBuilder(listOf(command) + arguments)
+            ProcessBuilder(fullCommand)
                 .directory(workingDirectory?.let(::File))
                 .start()
         } catch (exception: Exception) {
-            LOG.warn("Could not start ACP config model load: command=${formatCommand(command, arguments)}", exception)
+            LOG.warn("Could not start ACP profile model load: command=${formatCommand(fullCommand)}", exception)
             return Result.failure(exception)
         }
 
         val executor = AppExecutorUtil.getAppExecutorService()
+        val stdoutFuture = executor.submit<String> {
+            process.inputStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
+                lines.joinToString("\n")
+            }
+        }
         val stderrFuture = executor.submit<String> {
             process.errorStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
                 lines.joinToString("\n").take(MAX_DIAGNOSTIC_CHARS)
             }
         }
+
         return try {
-            val options = executor.submit<List<String>> {
-                runBlocking {
-                    runSdkProtocolUntilLoadedOrExited(process, workingDirectory)
-                }
-            }.get(15, TimeUnit.SECONDS)
-            LOG.info("Loaded ACP config model options: command=${formatCommand(command, arguments)}, count=${options.size}")
-            Result.success(options)
+            if (!process.waitFor(MODEL_LOAD_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                throw TimeoutException("model command timed out")
+            }
+
+            val stderr = stderrFuture.diagnosticText()
+            val stdout = stdoutFuture.get(1, TimeUnit.SECONDS)
+            if (process.exitValue() != 0) {
+                val diagnostic = commandFailureDiagnostic(fullCommand, process.exitValue(), stderr)
+                LOG.warn(diagnostic)
+                return Result.failure(IllegalStateException(diagnostic))
+            }
+
+            val models = parser(stdout)
+            LOG.info("Loaded ACP profile model options: command=${formatCommand(fullCommand)}, count=${models.size}")
+            Result.success(models)
         } catch (exception: TimeoutException) {
             process.destroyForcibly()
-            val diagnostic = "ACP config model load timed out: command=${formatCommand(command, arguments)}, stderr=${stderrFuture.diagnosticStderr()}"
-            LOG.warn(
-                diagnostic,
-            )
+            val diagnostic = "ACP profile model load timed out: command=${formatCommand(fullCommand)}, stderr=${stderrFuture.diagnosticText()}"
+            LOG.warn(diagnostic, exception)
             Result.failure(IllegalStateException(diagnostic, exception))
         } catch (exception: Exception) {
             val cause = exception.cause ?: exception
             val diagnostic = buildString {
-                append("ACP config model load failed: command=")
-                append(formatCommand(command, arguments))
+                append("ACP profile model load failed: command=")
+                append(formatCommand(fullCommand))
                 append(", exitCode=")
                 append(exitCodeIfAvailable(process))
-                val stderr = stderrFuture.diagnosticStderr()
+                val stderr = stderrFuture.diagnosticText()
                 if (stderr.isNotBlank()) {
                     append(", stderr=")
                     append(stderr)
@@ -89,10 +108,7 @@ object AcpModelOptionsLoader {
                 append(". ")
                 append(cause.message ?: cause.javaClass.simpleName)
             }
-            LOG.warn(
-                diagnostic,
-                cause,
-            )
+            LOG.warn(diagnostic, cause)
             Result.failure(IllegalStateException(diagnostic, cause))
         } finally {
             process.destroy()
@@ -101,127 +117,53 @@ object AcpModelOptionsLoader {
         }
     }
 
-    private suspend fun runSdkProtocolUntilLoadedOrExited(process: Process, workingDirectory: String?): List<String> {
-        val result = CompletableDeferred<List<String>>()
-        val protocolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        protocolScope.launch {
-            runCatching { runSdkProtocol(process, workingDirectory) }
-                .onSuccess { result.complete(it) }
-                .onFailure { result.completeExceptionally(it) }
-        }
-        protocolScope.launch(Dispatchers.IO) {
-            process.waitFor()
-            delay(PROCESS_EXIT_GRACE_MILLIS)
-            if (!result.isCompleted) {
-                result.completeExceptionally(
-                    IllegalStateException("ACP agent exited before model options were loaded: exitCode=${exitCodeIfAvailable(process)}"),
-                )
-            }
-        }
-        return try {
-            result.await()
-        } finally {
-            protocolScope.cancel()
-        }
-    }
-
-    @OptIn(UnstableApi::class)
-    private suspend fun runSdkProtocol(process: Process, workingDirectory: String?): List<String> {
-        val protocolScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val outputWriter = process.outputStream.bufferedWriter(StandardCharsets.UTF_8)
-        val transport = StdioTransport(
-            parentScope = protocolScope,
-            ioDispatcher = Dispatchers.IO,
-            input = flow {
-                process.inputStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
-                    lines.forEach { line -> emit(line) }
-                }
-            },
-            output = { line ->
-                withContext(Dispatchers.IO) {
-                    outputWriter.write(line)
-                    outputWriter.newLine()
-                    outputWriter.flush()
-                }
-            },
-            name = "CommitNinjaAcpModelOptionsTransport",
-        )
-        val protocol = Protocol(protocolScope, transport)
-        val client = Client(protocol)
-
-        return try {
-            protocol.start()
-            client.initialize(
-                ClientInfo(
-                    capabilities = ClientCapabilities(),
-                    implementation = Implementation(name = "Commit Ninja", version = "0.1.0"),
-                ),
-            )
-            val session = client.newSession(
-                SessionCreationParameters(
-                    cwd = workingDirectory ?: System.getProperty("user.home").orEmpty(),
-                    mcpServers = emptyList(),
-                ),
-            ) { _, _ -> ModelOptionsClientSessionOperations() }
-            extractModelOptions(session)
-        } finally {
-            transport.close()
-            protocolScope.cancel()
-        }
-    }
-
-    @OptIn(UnstableApi::class)
-    private fun extractModelOptions(session: ClientSession): List<String> {
-        val availableModels = if (session.modelsSupported) {
-            session.availableModels.map { model -> model.modelId.value }
-        } else {
-            emptyList()
-        }
-        val configModels = if (session.configOptionsSupported) {
-            session.configOptions.value
-                .asSequence()
-                .filter(::isModelOption)
-                .flatMap { option -> extractOptionValues(option).asSequence() }
-                .toList()
-        } else {
-            emptyList()
-        }
-        return (availableModels + configModels)
+    private fun parseLineModels(output: String): List<String> =
+        output.lineSequence()
             .map(String::trim)
             .filter(String::isNotBlank)
             .distinct()
+            .toList()
+
+    private fun parseCodexBundledModels(output: String): List<String> {
+        val root = Json.parseToJsonElement(output)
+        return collectSlugOrIdValues(root)
+            .map(String::trim)
+            .filter { model -> model.startsWith("gpt-") }
+            .filterNot(::isCodexAutoReviewModel)
+            .distinct()
+            .toList()
     }
 
-    private class ModelOptionsClientSessionOperations : ClientSessionOperations {
-        override suspend fun requestPermissions(
-            toolCall: SessionUpdate.ToolCallUpdate,
-            permissions: List<PermissionOption>,
-            _meta: JsonElement?,
-        ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+    private fun isCodexAutoReviewModel(model: String): Boolean =
+        model == "codex-auto-review" || model.endsWith("-codex-auto-review")
 
-        override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) {
-            LOG.debug("ACP model option session notification: $notification")
+    private fun collectSlugOrIdValues(element: JsonElement): Sequence<String> = sequence {
+        when (element) {
+            is JsonObject -> {
+                val slug = (element["slug"] as? JsonPrimitive)?.contentOrNull
+                val id = (element["id"] as? JsonPrimitive)?.contentOrNull
+                if (slug != null) yield(slug)
+                if (id != null) yield(id)
+                element.values.forEach { child -> yieldAll(collectSlugOrIdValues(child)) }
+            }
+            is JsonArray -> element.forEach { child -> yieldAll(collectSlugOrIdValues(child)) }
+            else -> Unit
         }
     }
 
-    @OptIn(UnstableApi::class)
-    private fun isModelOption(option: SessionConfigOption): Boolean {
-        if (option.category == SessionConfigOptionCategory.MODEL) return true
-        return listOf(option.id.value, option.name, option.description.orEmpty())
-            .any { value -> value.contains("model", ignoreCase = true) }
-    }
-
-    private fun extractOptionValues(option: SessionConfigOption): List<String> {
-        if (option !is SessionConfigOption.Select) return emptyList()
-        return when (val options = option.options) {
-            is SessionConfigSelectOptions.Flat -> options.options.map { selectOption -> selectOption.value.value }
-            is SessionConfigSelectOptions.Grouped -> options.groups.flatMap { group ->
-                group.options.map { selectOption -> selectOption.value.value }
+    private fun commandFailureDiagnostic(command: List<String>, exitCode: Int, stderr: String): String =
+        buildString {
+            append("ACP profile model load failed: command=")
+            append(formatCommand(command))
+            append(", exitCode=")
+            append(exitCode)
+            if (stderr.isNotBlank()) {
+                append(", stderr=")
+                append(stderr)
             }
         }
-    }
 
-    private fun java.util.concurrent.Future<String>.diagnosticStderr(): String =
+    private fun java.util.concurrent.Future<String>.diagnosticText(): String =
         runCatching { get(1, TimeUnit.SECONDS).trim().take(MAX_DIAGNOSTIC_CHARS) }.getOrDefault("")
 
     private fun exitCodeIfAvailable(process: Process): String =
@@ -229,10 +171,10 @@ object AcpModelOptionsLoader {
             if (process.isAlive) "running" else process.exitValue().toString()
         }.getOrDefault("unknown")
 
-    private fun formatCommand(command: String, arguments: List<String>): String =
-        (listOf(command) + arguments).joinToString(" ")
+    private fun formatCommand(command: List<String>): String = command.joinToString(" ")
 
     private val LOG = Logger.getInstance(AcpModelOptionsLoader::class.java)
+    private val CLAUDE_BUILT_IN_MODELS = listOf("default", "opus", "sonnet", "haiku")
     private const val MAX_DIAGNOSTIC_CHARS = 1_000
-    private const val PROCESS_EXIT_GRACE_MILLIS = 250L
+    private const val MODEL_LOAD_TIMEOUT_SECONDS = 15L
 }

@@ -45,7 +45,26 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
         get() = state.arguments.orEmpty().ifBlank { profile.defaultArguments }
 
     fun isConfigured(): Boolean =
-        profile != AgentProfile.NONE && resolvedCommand.isNotBlank()
+        configurationDiagnostic().isConfigured
+
+    fun configurationDiagnostic(): SettingsConfigurationDiagnostic {
+        val currentProfile = profile
+        val hasGenerationCommand = resolvedCommand.isNotBlank()
+        val hasModelLoadCommand = state.command.orEmpty().isNotBlank() || currentProfile.defaultModelCommand.isNotBlank()
+        val reason = when {
+            currentProfile == AgentProfile.NONE -> SettingsConfigurationReason.PROFILE_MISSING
+            !hasGenerationCommand -> SettingsConfigurationReason.GENERATION_COMMAND_MISSING
+            else -> null
+        }
+        return SettingsConfigurationDiagnostic(
+            isConfigured = reason == null,
+            reason = reason,
+            profile = currentProfile,
+            hasGenerationCommand = hasGenerationCommand,
+            hasModelLoadCommand = hasModelLoadCommand,
+            hasSelectedModel = state.model.orEmpty().isNotBlank(),
+        )
+    }
 
     fun applyProfileDefaults(profile: AgentProfile) {
         state.profileName = profile.name
@@ -62,4 +81,18 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
         fun getInstance(): CommitGenerationSettings =
             ApplicationManager.getApplication().getService(CommitGenerationSettings::class.java)
     }
+}
+
+data class SettingsConfigurationDiagnostic(
+    val isConfigured: Boolean,
+    val reason: SettingsConfigurationReason?,
+    val profile: AgentProfile,
+    val hasGenerationCommand: Boolean,
+    val hasModelLoadCommand: Boolean,
+    val hasSelectedModel: Boolean,
+)
+
+enum class SettingsConfigurationReason {
+    PROFILE_MISSING,
+    GENERATION_COMMAND_MISSING,
 }

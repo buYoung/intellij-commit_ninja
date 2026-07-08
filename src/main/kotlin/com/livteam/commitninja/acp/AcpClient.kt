@@ -49,7 +49,7 @@ class AcpClient(private val project: Project) {
         LOG.info(
             "Starting ACP commit generation through Kotlin SDK: profile=${request.profile.name}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
         )
-        LOG.debug("ACP commit generation prompt payload:\n$prompt")
+        LOG.debug("ACP commit generation input prompt:\n$prompt")
         val process = try {
             ProcessBuilder(command)
                 .directory(request.workingDirectory?.let(::File))
@@ -187,7 +187,7 @@ class AcpClient(private val project: Project) {
                 }
             }
             val rawOutput = transcript.toString()
-            LOG.debug("ACP collected output:\n$rawOutput")
+            LOG.debug("ACP collected output prompt:\n$rawOutput")
             val parsed = CommitMessageOutputParser.parse(rawOutput)
             if (parsed == null) {
                 val diagnostic = parseFailureDiagnostic(rawOutput)
@@ -261,8 +261,7 @@ class AcpClient(private val project: Project) {
     private fun appendTranscriptText(transcript: StringBuilder, text: String) {
         val remainingChars = MAX_ACP_TRANSCRIPT_CHARS - transcript.length
         if (remainingChars <= 0) return
-        val line = "$text\n"
-        transcript.append(line.take(remainingChars))
+        transcript.append(text.take(remainingChars))
     }
 
     private fun failure(type: GenerationFailureType, message: String): CommitMessageGenerationResult.Failure =
@@ -272,7 +271,7 @@ class AcpClient(private val project: Project) {
         append("ACP response did not contain a usable commit message.")
         append(" outputChars=")
         append(rawOutput.length)
-        append(", rawOutputPreview=")
+        append("\noutput prompt:\n")
         append(boundedPreview(rawOutput))
     }
 

@@ -16,6 +16,12 @@ class CheckedCommitChangesProvider {
             includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
         )
 
+    fun checkedChangeCount(event: AnActionEvent): Int? =
+        checkedChangeCountFromSources(
+            actionChanges = event.getData(VcsDataKeys.CHANGES),
+            includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
+        )
+
     fun collect(event: AnActionEvent): List<CheckedChangeContext> =
         collectFromSources(
             actionChanges = event.getData(VcsDataKeys.CHANGES),
@@ -48,6 +54,11 @@ class CheckedCommitChangesProvider {
         actionChanges: Array<Change>?,
         includedChanges: List<Change>?,
     ): Boolean = !selectedChanges(actionChanges, includedChanges).isNullOrEmpty()
+
+    fun checkedChangeCountFromSources(
+        actionChanges: Array<Change>?,
+        includedChanges: List<Change>?,
+    ): Int? = selectedChanges(actionChanges, includedChanges)?.size
 
     private fun selectedChanges(
         actionChanges: Array<Change>?,

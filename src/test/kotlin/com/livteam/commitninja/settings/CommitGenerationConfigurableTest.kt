@@ -286,32 +286,86 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         configurable.disposeUIResources()
     }
 
-    fun testClaudeAndCodexProfilesAreNotConfiguredWithoutExplicitAcpCommand() {
+    fun testClaudeAndCodexProfilesAreConfiguredWithSelectedModelAndDefaultGenerationCommand() {
         val state = CommitGenerationSettings.getInstance().state
 
         state.profileName = AgentProfile.CLAUDE_AGENT_ACP.name
         state.command = ""
-        assertFalse(CommitGenerationSettings.getInstance().isConfigured())
+        state.model = "sonnet"
+        var diagnostic = CommitGenerationSettings.getInstance().configurationDiagnostic()
+        assertTrue(diagnostic.isConfigured)
+        assertNull(diagnostic.reason)
+        assertTrue(diagnostic.hasGenerationCommand)
+        assertEquals("npx", CommitGenerationSettings.getInstance().resolvedCommand)
+        assertEquals("-y @zed-industries/claude-agent-acp", CommitGenerationSettings.getInstance().resolvedArguments)
 
         state.profileName = AgentProfile.CODEX_ACP.name
         state.command = ""
-        assertFalse(CommitGenerationSettings.getInstance().isConfigured())
+        state.model = "gpt-5.4-mini"
+        diagnostic = CommitGenerationSettings.getInstance().configurationDiagnostic()
+        assertTrue(diagnostic.isConfigured)
+        assertNull(diagnostic.reason)
+        assertTrue(diagnostic.hasGenerationCommand)
+        assertEquals("npx", CommitGenerationSettings.getInstance().resolvedCommand)
+        assertEquals("-y @zed-industries/codex-acp", CommitGenerationSettings.getInstance().resolvedArguments)
     }
 
-    fun testCodexProfileWithoutExplicitAcpCommandDoesNotLoadModels() {
+    fun testExplicitCommandProvidesModelLoadCommandForProfileWithoutDefaultModelCommand() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CLAUDE_AGENT_ACP.name
+        state.command = "claude-acp"
+
+        val diagnostic = CommitGenerationSettings.getInstance().configurationDiagnostic()
+
+        assertTrue(diagnostic.hasGenerationCommand)
+        assertTrue(diagnostic.hasModelLoadCommand)
+    }
+
+    fun testCodexProfileWithoutExplicitAcpCommandLoadsModelsWithDefaultModelCommand() {
         val state = CommitGenerationSettings.getInstance().state
         state.profileName = AgentProfile.CODEX_ACP.name
-        var loadCount = 0
+        val loadRequests = mutableListOf<Pair<String, List<String>>>()
 
-        val configurable = testConfigurable { _, _, _, _ ->
-            loadCount += 1
+        val configurable = testConfigurable { profile, command, arguments, _ ->
+            assertEquals(AgentProfile.CODEX_ACP, profile)
+            loadRequests += command to arguments
             Result.success(listOf("gpt-5.4-mini"))
         }
         val component = configurable.createComponent()
 
-        assertEquals(0, loadCount)
-        assertEquals(listOf("Agent default"), modelItems(modelComboBox(component)))
-        assertEquals("The selected profile has no command.", modelStatusLabel(component).text)
+        assertEquals(listOf("codex" to listOf("debug", "models", "--bundled")), loadRequests)
+        assertEquals(listOf("Agent default", "gpt-5.4-mini"), modelItems(modelComboBox(component)))
+        assertEquals(
+            "Loaded 1 model choices from the ACP agent.",
+            modelStatusLabel(component).text,
+        )
+
+        configurable.disposeUIResources()
+    }
+
+    fun testCodexModelSelectionMarksSettingsConfiguredWithDefaultGenerationCommand() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+
+        val configurable = testConfigurable { profile, _, _, _ ->
+            assertEquals(AgentProfile.CODEX_ACP, profile)
+            Result.success(listOf("gpt-5.4-mini"))
+        }
+        val component = configurable.createComponent()
+        val modelComboBox = modelComboBox(component)
+
+        modelComboBox.selectedItem = "gpt-5.4-mini"
+        configurable.apply()
+
+        val diagnostic = CommitGenerationSettings.getInstance().configurationDiagnostic()
+        assertTrue(diagnostic.isConfigured)
+        assertNull(diagnostic.reason)
+        assertTrue(diagnostic.hasGenerationCommand)
+        assertTrue(diagnostic.hasModelLoadCommand)
+        assertTrue(diagnostic.hasSelectedModel)
+        assertEquals("npx", CommitGenerationSettings.getInstance().resolvedCommand)
+        assertEquals("-y @zed-industries/codex-acp", CommitGenerationSettings.getInstance().resolvedArguments)
+        assertEquals("gpt-5.4-mini", CommitGenerationSettings.getInstance().state.model)
 
         configurable.disposeUIResources()
     }
@@ -344,7 +398,8 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
                 text.startsWith("Could not load models") ||
                 text.startsWith("The ACP agent did not report") ||
                 text.startsWith("Select an ACP agent profile") ||
-                text.startsWith("The selected profile has no command")
+                text.startsWith("The selected profile has no command") ||
+                text.startsWith("Loaded 1 model choices. Commit generation still needs")
         }
 
     private fun modelItems(comboBox: JComboBox<*>): List<String> =

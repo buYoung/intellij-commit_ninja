@@ -9,6 +9,16 @@ import com.livteam.commitninja.settings.CommitGenerationSettings
 
 @Service(Service.Level.PROJECT)
 class CommitMessageGenerationService(private val project: Project) {
+    private var acpGenerate: (CommitMessageGenerationRequest, String) -> CommitMessageGenerationResult =
+        { request, prompt -> AcpClient(project).generate(request, prompt) }
+
+    internal constructor(
+        project: Project,
+        acpGenerate: (CommitMessageGenerationRequest, String) -> CommitMessageGenerationResult,
+    ) : this(project) {
+        this.acpGenerate = acpGenerate
+    }
+
     fun generate(request: CommitMessageGenerationRequest): CommitMessageGenerationResult {
         if (request.changes.isEmpty()) {
             LOG.warn("Commit message generation rejected: no checked changes")
@@ -23,8 +33,8 @@ class CommitMessageGenerationService(private val project: Project) {
         LOG.info(
             "Built commit generation prompt: promptChars=${prompt.length}, changePaths=${request.changes.joinToString(",") { it.path }}",
         )
-        LOG.debug("Commit generation full prompt:\n$prompt")
-        val result = AcpClient(project).generate(request, prompt)
+        LOG.debug("Commit generation input prompt:\n$prompt")
+        val result = acpGenerate(request, prompt)
         when (result) {
             is CommitMessageGenerationResult.Success -> LOG.info("Commit message generation succeeded: messageChars=${result.message.length}")
             is CommitMessageGenerationResult.Failure -> LOG.warn(
@@ -36,8 +46,15 @@ class CommitMessageGenerationService(private val project: Project) {
 
     fun requestFromSettings(changes: List<CheckedChangeContext>, branchName: String?): CommitMessageGenerationResult? {
         val settings = CommitGenerationSettings.getInstance()
-        if (!settings.isConfigured()) {
-            LOG.warn("Commit message generation settings missing")
+        val settingsDiagnostic = settings.configurationDiagnostic()
+        if (!settingsDiagnostic.isConfigured) {
+            LOG.warn(
+                "Commit message generation settings missing: " +
+                    "reason=${settingsDiagnostic.reason}, profile=${settingsDiagnostic.profile.name}, " +
+                    "hasGenerationCommand=${settingsDiagnostic.hasGenerationCommand}, " +
+                    "hasModelLoadCommand=${settingsDiagnostic.hasModelLoadCommand}, " +
+                    "hasSelectedModel=${settingsDiagnostic.hasSelectedModel}",
+            )
             return CommitMessageGenerationResult.Failure(
                 GenerationDiagnostic(GenerationFailureType.SETTINGS_MISSING, "ACP agent settings are incomplete."),
             )
@@ -63,9 +80,12 @@ class CommitMessageGenerationService(private val project: Project) {
         prompt.appendBoundedLine(request.userPrompt.trim())
         prompt.appendBoundedLine()
         prompt.appendBoundedLine("Return only the final commit message. Do not include analysis, reasoning, alternatives, labels, or markdown fences.")
-        prompt.appendBoundedLine("The first line must be a Conventional Commit header, for example: feat(scope): concise summary")
+        prompt.appendBoundedLine(
+            "The first line must be a Conventional Commit header, for example: feat(scope): concise summary or fix(scope)",
+        )
         prompt.appendBoundedLine()
         prompt.appendBoundedLine("GIT_BRANCH_NAME=${request.branchName.orEmpty()}")
+        prompt.appendBoundedLine("TICKET_ID=${request.branchName.derivedTicketId().orEmpty()}")
         request.model?.let {
             prompt.appendBoundedLine("Preferred model: $it")
         }
@@ -111,8 +131,14 @@ class CommitMessageGenerationService(private val project: Project) {
         append(prompt.length)
         append(", changePaths=")
         append(request.changes.joinToString(",") { it.path }.take(MAX_FAILURE_DIAGNOSTIC_CHARS))
-        append(", promptPreview=")
+        append("\ninput prompt:\n")
         append(prompt.boundedFailurePreview())
+    }
+
+    private fun String?.derivedTicketId(): String? {
+        val branchName = this?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (branchName.lowercase() in RESERVED_BRANCH_NAMES) return null
+        return branchName
     }
 
     private fun String.boundedFailurePreview(): String {
@@ -129,5 +155,6 @@ class CommitMessageGenerationService(private val project: Project) {
         const val MAX_COMMIT_PROMPT_CHARS = 80_000
         const val MAX_CHANGE_DETAIL_CHARS = 12_000
         const val MAX_FAILURE_DIAGNOSTIC_CHARS = 2_000
+        val RESERVED_BRANCH_NAMES = setOf("main", "develop", "master", "staging")
     }
 }
