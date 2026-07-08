@@ -1,22 +1,39 @@
 package com.livteam.commitninja.settings
 
-enum class AgentProfile(
-    val displayName: String,
-    val defaultCommand: String,
-    val defaultArguments: String,
-    val defaultModelCommand: String = defaultCommand,
-    val defaultModelArguments: String = "",
-) {
-    NONE("Not configured", "", ""),
-    OPENCODE("opencode", "opencode", "acp", defaultModelArguments = "models"),
-    CLAUDE_AGENT_ACP("Claude", "npx", "-y @zed-industries/claude-agent-acp"),
-    CODEX_ACP("Codex", "npx", "-y @zed-industries/codex-acp", defaultModelCommand = "codex", defaultModelArguments = "debug models --bundled"),
-    JUNIE_ACP("Junie", "junie", "--acp true");
+import com.livteam.commitninja.acp.profile.AcpAgentProfile
+import com.livteam.commitninja.acp.profile.AcpBuiltInProfiles
+import com.livteam.commitninja.acp.profile.AcpProfileRegistry
+import com.livteam.commitninja.acp.profile.LegacyProfileIds
+
+enum class AgentProfile(val profileId: String) {
+    NONE(AcpBuiltInProfiles.NONE.id),
+    OPENCODE(AcpBuiltInProfiles.OPENCODE.id),
+    CLAUDE_AGENT_ACP(AcpBuiltInProfiles.CLAUDE_AGENT_ACP.id),
+    CODEX_ACP(AcpBuiltInProfiles.CODEX_ACP.id),
+    JUNIE_ACP(AcpBuiltInProfiles.JUNIE_ACP.id);
+
+    val profileDefinition: AcpAgentProfile
+        get() = AcpProfileRegistry.requireById(profileId)
+
+    val displayName: String
+        get() = profileDefinition.displayName
+
+    val defaultCommand: String
+        get() = profileDefinition.generationCommand
+
+    val defaultArguments: String
+        get() = profileDefinition.generationArguments
+
+    val defaultModelCommand: String
+        get() = profileDefinition.modelCommand
+
+    val defaultModelArguments: String
+        get() = profileDefinition.modelArguments
 
     override fun toString(): String = displayName
 
     companion object {
         fun fromStoredName(name: String?): AgentProfile =
-            entries.firstOrNull { it.name == name } ?: NONE
+            entries.firstOrNull { it.name == name || it.profileId == LegacyProfileIds.toStableId(name) } ?: NONE
     }
 }

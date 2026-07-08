@@ -49,7 +49,7 @@ class AcpClient(private val project: Project) {
     fun generate(request: CommitMessageGenerationRequest, prompt: String): CommitMessageGenerationResult {
         val command = listOf(request.command) + request.arguments
         LOG.info(
-            "Starting ACP commit generation through Kotlin SDK: profile=${request.profile.name}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
+            "Starting ACP commit generation through Kotlin SDK: profile=${request.profileId}, model=${request.model.orEmpty()}, command=${formatCommand(command)}, workingDirectory=${request.workingDirectory.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
         )
         LOG.debug("ACP commit generation input prompt:\n$prompt")
         val process = try {

@@ -13,8 +13,13 @@ import com.intellij.ui.dsl.builder.panel
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.livteam.commitninja.MyBundle
 import com.livteam.commitninja.acp.AgentModelOptionsLoader
+import com.livteam.commitninja.acp.profile.AcpAgentProfile
+import com.livteam.commitninja.acp.profile.AcpBuiltInProfiles
+import com.livteam.commitninja.acp.profile.AcpProfileRegistry
+import com.livteam.commitninja.acp.profile.LegacyProfileIds
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
+import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JComponent
 
@@ -27,25 +32,40 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         uiDispatcher = { action ->
             ApplicationManager.getApplication().invokeLater(action, ModalityState.any())
         },
+        marker = Unit,
     )
 
     internal constructor(
         modelOptionsLoader: (AgentProfile, String, List<String>, String?) -> Result<List<String>>,
         backgroundExecutor: Executor,
         uiDispatcher: ((Runnable) -> Unit),
+    ) : this(
+        modelOptionsLoader = { profile, command, arguments, workingDirectory ->
+            modelOptionsLoader(AgentProfile.fromStoredName(profile.id), command, arguments, workingDirectory)
+        },
+        backgroundExecutor = backgroundExecutor,
+        uiDispatcher = uiDispatcher,
+        marker = Unit,
+    )
+
+    private constructor(
+        modelOptionsLoader: (AcpAgentProfile, String, List<String>, String?) -> Result<List<String>>,
+        backgroundExecutor: Executor,
+        uiDispatcher: ((Runnable) -> Unit),
+        marker: Unit,
     ) {
         this.modelOptionsLoader = modelOptionsLoader
         this.backgroundExecutor = backgroundExecutor
         this.uiDispatcher = uiDispatcher
     }
 
-    private val modelOptionsLoader: (AgentProfile, String, List<String>, String?) -> Result<List<String>>
+    private val modelOptionsLoader: (AcpAgentProfile, String, List<String>, String?) -> Result<List<String>>
     private val backgroundExecutor: Executor
     private val uiDispatcher: (Runnable) -> Unit
     private val modelLoadGeneration = AtomicInteger()
     private var isResetting = false
     private var component: JComponent? = null
-    private val profileComboBox = ComboBox(AgentProfile.entries.toTypedArray())
+    private val profileComboBox = ComboBox<ProfileSelectionItem>(DefaultComboBoxModel(knownProfileItems().toTypedArray()))
     private val modelSelector = SearchableStringComboBox(
         options = listOf(MODEL_AGENT_DEFAULT),
         isSearchMatchCandidate = { option -> option != MODEL_AGENT_DEFAULT },
@@ -66,7 +86,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         profileComboBox.addActionListener {
             refreshDefaultCommandText()
             if (!isResetting) {
-                LOG.info("ACP profile changed in settings: profile=${selectedProfile().name}; clearing stale model selection")
+                LOG.info("ACP profile changed in settings: profile=${selectedProfileId()}; clearing stale model selection")
                 clearModelOptions()
                 modelStatusLabel.text = MyBundle["settings.agent.modelStatus.default"]
                 loadModelOptions()
@@ -126,7 +146,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         val settings = CommitGenerationSettings.getInstance()
         val state = settings.state
         val selectedProfile = selectedProfile()
-        return state.profileName != selectedProfile.name ||
+        return LegacyProfileIds.toStableId(state.profileName).orEmpty() != selectedProfileId() ||
             normalizedCommandOverride(selectedProfile, state.command.orEmpty()) != normalizedCommandOverride(
                 selectedProfile,
                 commandOverrideField.text,
@@ -144,8 +164,8 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         val settings = CommitGenerationSettings.getInstance()
         val selectedProfile = selectedProfile()
         val selectedModel = selectedModel()
-        LOG.info("Applying ACP generation settings: profile=${selectedProfile.name}, model=${selectedModel.ifBlank { MODEL_AGENT_DEFAULT }}")
-        settings.state.profileName = selectedProfile.name
+        LOG.info("Applying ACP generation settings: profile=${selectedProfileId()}, model=${selectedModel.ifBlank { MODEL_AGENT_DEFAULT }}")
+        settings.state.profileName = selectedProfileId()
         settings.state.command = normalizedCommandOverride(selectedProfile, commandOverrideField.text)
         settings.state.arguments = normalizedArgumentsOverride(selectedProfile, argumentsOverrideField.text)
         settings.state.model = selectedModel
@@ -156,10 +176,12 @@ class CommitGenerationConfigurable : SearchableConfigurable {
     override fun reset() {
         val settings = CommitGenerationSettings.getInstance()
         val state = settings.state
-        val profile = AgentProfile.fromStoredName(state.profileName)
+        val profileItem = profileItemForStoredId(state.profileName)
+        val profile = profileItem.profile
         isResetting = true
         try {
-            profileComboBox.selectedItem = profile
+            profileComboBox.model = DefaultComboBoxModel(profileItemsFor(profileItem).toTypedArray())
+            profileComboBox.selectedItem = profileItem
             commandOverrideField.text = normalizedCommandOverride(profile, state.command.orEmpty())
             argumentsOverrideField.text = normalizedArgumentsOverride(profile, state.arguments.orEmpty())
             setModelOptions(emptyList(), state.model.orEmpty(), allowCustomSelection = true)
@@ -177,8 +199,14 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         component = null
     }
 
-    private fun selectedProfile(): AgentProfile =
-        profileComboBox.selectedItem as? AgentProfile ?: AgentProfile.NONE
+    private fun selectedProfileItem(): ProfileSelectionItem =
+        profileComboBox.selectedItem as? ProfileSelectionItem ?: ProfileSelectionItem.Known(AcpBuiltInProfiles.NONE)
+
+    private fun selectedProfile(): AcpAgentProfile? =
+        selectedProfileItem().profile
+
+    private fun selectedProfileId(): String =
+        selectedProfileItem().id
 
     private fun selectedModel(): String {
         val selected = modelSelector.selectedValue
@@ -192,12 +220,12 @@ class CommitGenerationConfigurable : SearchableConfigurable {
 
     private fun refreshDefaultCommandText() {
         val profile = selectedProfile()
-        defaultCommandLabel.text = if (profile == AgentProfile.NONE) {
+        defaultCommandLabel.text = if (profile == null || profile.id == AcpBuiltInProfiles.NONE.id) {
             MyBundle["settings.agent.defaultCommand.none"]
-        } else if (profile.defaultCommand.isBlank()) {
+        } else if (profile.generationCommand.isBlank()) {
             MyBundle["settings.agent.defaultCommand.customRequired"]
         } else {
-            MyBundle["settings.agent.defaultCommand", profile.defaultCommand, profile.defaultArguments.ifBlank { "-" }]
+            MyBundle["settings.agent.defaultCommand", profile.generationCommand, profile.generationArguments.ifBlank { "-" }]
         }
     }
 
@@ -215,14 +243,14 @@ class CommitGenerationConfigurable : SearchableConfigurable {
             .takeIf { it.isNotBlank() && (it in modelOptions || allowCustomSelection) }
             ?: MODEL_AGENT_DEFAULT
         if (selectedModel.isNotBlank() && selectedModelOption == MODEL_AGENT_DEFAULT) {
-            LOG.info("Cleared stale ACP selected model for profile=${selectedProfile().name}: model=$selectedModel")
+            LOG.info("Cleared stale ACP selected model for profile=${selectedProfileId()}: model=$selectedModel")
         }
         modelSelector.setOptions(modelOptions, selectedModelOption, allowCustomSelection)
     }
 
     private fun loadModelOptions() {
         val profile = selectedProfile()
-        if (profile == AgentProfile.NONE) {
+        if (profile == null || profile.id == AcpBuiltInProfiles.NONE.id) {
             loadModelsButton.isEnabled = true
             modelStatusLabel.text = MyBundle["settings.agent.modelStatus.profileRequired"]
             return
@@ -239,7 +267,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         loadModelsButton.isEnabled = false
         modelStatusLabel.text = MyBundle["settings.agent.modelStatus.loading"]
         LOG.info(
-            "Loading ACP model options from settings: profile=${profile.name}, command=$command, arguments=${arguments.joinToString(" ")}, selectedModelBeforeLoad=${selectedModelBeforeLoad.ifBlank { MODEL_AGENT_DEFAULT }}",
+            "Loading ACP model options from settings: profile=${profile.id}, command=$command, arguments=${arguments.joinToString(" ")}, selectedModelBeforeLoad=${selectedModelBeforeLoad.ifBlank { MODEL_AGENT_DEFAULT }}",
         )
         backgroundExecutor.execute {
             val result = modelOptionsLoader(profile, command, arguments, null)
@@ -257,7 +285,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                     result.fold(
                         onSuccess = { models ->
                             setModelOptions(models, selectedModelBeforeLoad, allowCustomSelection = false)
-                            LOG.info("Loaded ACP model options in settings: profile=${profile.name}, count=${models.size}")
+                            LOG.info("Loaded ACP model options in settings: profile=${profile.id}, count=${models.size}")
                             modelStatusLabel.text = if (models.isEmpty()) {
                                 MyBundle["settings.agent.modelStatus.empty"]
                             } else if (generationCommand(profile).isBlank()) {
@@ -268,7 +296,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                         },
                         onFailure = { exception ->
                             LOG.warn(
-                                "Failed to load ACP model options in settings: profile=${profile.name}, command=$command, arguments=${arguments.joinToString(" ")}",
+                                "Failed to load ACP model options in settings: profile=${profile.id}, command=$command, arguments=${arguments.joinToString(" ")}",
                                 exception,
                             )
                             modelStatusLabel.text = MyBundle[
@@ -283,21 +311,21 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         }
     }
 
-    private fun normalizedCommandOverride(profile: AgentProfile, value: String): String =
-        value.trim().takeUnless { it.isBlank() || it == profile.defaultCommand }.orEmpty()
+    private fun normalizedCommandOverride(profile: AcpAgentProfile?, value: String): String =
+        value.trim().takeUnless { it.isBlank() || it == profile?.generationCommand.orEmpty() }.orEmpty()
 
-    private fun normalizedArgumentsOverride(profile: AgentProfile, value: String): String =
-        value.trim().takeUnless { it.isBlank() || it == profile.defaultArguments }.orEmpty()
+    private fun normalizedArgumentsOverride(profile: AcpAgentProfile?, value: String): String =
+        value.trim().takeUnless { it.isBlank() || it == profile?.generationArguments.orEmpty() }.orEmpty()
 
-    private fun generationCommand(profile: AgentProfile): String =
-        commandOverrideField.text.trim().ifBlank { profile.defaultCommand }
+    private fun generationCommand(profile: AcpAgentProfile): String =
+        commandOverrideField.text.trim().ifBlank { profile.generationCommand }
 
-    private fun modelLoadCommand(profile: AgentProfile): String =
-        commandOverrideField.text.trim().ifBlank { profile.defaultModelCommand }
+    private fun modelLoadCommand(profile: AcpAgentProfile): String =
+        commandOverrideField.text.trim().ifBlank { profile.modelCommand }
 
-    private fun modelLoadArguments(profile: AgentProfile): List<String> =
+    private fun modelLoadArguments(profile: AcpAgentProfile): List<String> =
         AgentCommandLine.splitArguments(
-            argumentsOverrideField.text.trim().ifBlank { profile.defaultModelArguments },
+            argumentsOverrideField.text.trim().ifBlank { profile.modelArguments },
         )
 
     private fun modelItems(): List<String> =
@@ -307,5 +335,39 @@ class CommitGenerationConfigurable : SearchableConfigurable {
     internal companion object {
         private val LOG = Logger.getInstance(CommitGenerationConfigurable::class.java)
         const val MODEL_AGENT_DEFAULT = "Agent default"
+
+        private fun knownProfileItems(): List<ProfileSelectionItem> =
+            AcpProfileRegistry.profiles.map(ProfileSelectionItem::Known)
+
+        private fun profileItemForStoredId(storedId: String?): ProfileSelectionItem {
+            val stableId = LegacyProfileIds.toStableId(storedId).orEmpty()
+            val profile = AcpProfileRegistry.findById(stableId)
+            return if (profile != null) {
+                ProfileSelectionItem.Known(profile)
+            } else {
+                ProfileSelectionItem.Missing(stableId)
+            }
+        }
+
+        private fun profileItemsFor(selectedItem: ProfileSelectionItem): List<ProfileSelectionItem> =
+            buildList {
+                addAll(knownProfileItems())
+                if (selectedItem is ProfileSelectionItem.Missing) add(selectedItem)
+            }
+    }
+}
+
+private sealed class ProfileSelectionItem {
+    abstract val id: String
+    abstract val profile: AcpAgentProfile?
+
+    data class Known(override val profile: AcpAgentProfile) : ProfileSelectionItem() {
+        override val id: String = profile.id
+        override fun toString(): String = profile.displayName
+    }
+
+    data class Missing(override val id: String) : ProfileSelectionItem() {
+        override val profile: AcpAgentProfile? = null
+        override fun toString(): String = "Missing profile: $id"
     }
 }

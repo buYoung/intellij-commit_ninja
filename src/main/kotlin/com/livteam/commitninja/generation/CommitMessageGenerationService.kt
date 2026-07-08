@@ -28,7 +28,7 @@ class CommitMessageGenerationService(private val project: Project) {
             )
         }
         LOG.info(
-            "Starting commit message generation: profile=${request.profile.name}, model=${request.model.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
+            "Starting commit message generation: profile=${request.profileId}, model=${request.model.orEmpty()}, branch=${request.branchName.orEmpty()}, checkedChangeCount=${request.changes.size}",
         )
         val prompt = buildPrompt(request)
         LOG.info(
@@ -51,8 +51,8 @@ class CommitMessageGenerationService(private val project: Project) {
         val settingsDiagnostic = settings.configurationDiagnostic()
         if (!settingsDiagnostic.isConfigured) {
             LOG.warn(
-                "Commit message generation settings missing: " +
-                    "reason=${settingsDiagnostic.reason}, profile=${settingsDiagnostic.profile.name}, " +
+                    "Commit message generation settings missing: " +
+                    "reason=${settingsDiagnostic.reason}, profile=${settingsDiagnostic.profileId}, " +
                     "hasGenerationCommand=${settingsDiagnostic.hasGenerationCommand}, " +
                     "hasModelLoadCommand=${settingsDiagnostic.hasModelLoadCommand}, " +
                     "hasSelectedModel=${settingsDiagnostic.hasSelectedModel}",
@@ -62,7 +62,8 @@ class CommitMessageGenerationService(private val project: Project) {
             )
         }
         val request = CommitMessageGenerationRequest(
-            profile = settings.profile,
+            profileId = settingsDiagnostic.profileId,
+            profileDisplayName = settingsDiagnostic.profileDisplayName,
             command = settings.resolvedCommand,
             arguments = AgentCommandLine.splitArguments(settings.resolvedArguments),
             model = settings.state.model?.takeIf { it.isNotBlank() },
@@ -73,7 +74,7 @@ class CommitMessageGenerationService(private val project: Project) {
             workingDirectory = project.basePath,
         )
         LOG.info(
-            "Created commit generation request from settings: profile=${request.profile.name}, model=${request.model.orEmpty()}, branch=${branchName.orEmpty()}, checkedChangeCount=${changes.size}",
+            "Created commit generation request from settings: profile=${request.profileId}, model=${request.model.orEmpty()}, branch=${branchName.orEmpty()}, checkedChangeCount=${changes.size}",
         )
         return generate(request)
     }
@@ -130,7 +131,7 @@ class CommitMessageGenerationService(private val project: Project) {
 
     private fun failureInputDiagnostic(request: CommitMessageGenerationRequest, prompt: String): String = buildString {
         append("profile=")
-        append(request.profile.name)
+        append(request.profileId)
         append(", model=")
         append(request.model.orEmpty())
         append(", branch=")

@@ -130,7 +130,7 @@ class GenerateCommitMessageAction : DumbAwareAction(
             hasCommitWorkflowUi = hasCommitWorkflowUi,
             isConfigured = settingsDiagnostic.isConfigured,
             settingsConfigurationReason = settingsDiagnostic.reason,
-            settingsProfileName = settingsDiagnostic.profile.name,
+            settingsProfileName = settingsDiagnostic.profileId,
             settingsHasGenerationCommand = settingsDiagnostic.hasGenerationCommand,
             settingsHasModelLoadCommand = settingsDiagnostic.hasModelLoadCommand,
             settingsHasSelectedModel = settingsDiagnostic.hasSelectedModel,

@@ -80,7 +80,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         val profileComboBox = profileComboBox(component)
         val modelComboBox = modelComboBox(component)
 
-        profileComboBox.selectedItem = AgentProfile.CODEX_ACP
+        selectProfile(profileComboBox, AgentProfile.CODEX_ACP)
 
         assertFalse(modelItems(modelComboBox).contains("ollama-cloud/deepseek-v4-pro"))
         assertEquals(listOf("Agent default", "gpt-5.4-mini"), modelItems(modelComboBox))
@@ -390,7 +390,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
 
         assertEquals("ollama-cloud/deepseek-v4-pro", editorComponent.text)
 
-        profileComboBox.selectedItem = AgentProfile.CODEX_ACP
+        selectProfile(profileComboBox, AgentProfile.CODEX_ACP)
 
         assertEquals(listOf("Agent default", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"), modelItems(modelComboBox))
         assertEquals("Agent default", modelComboBox.selectedItem)
@@ -424,7 +424,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         val modelComboBox = modelComboBox(component)
 
         assertEquals(1, queuedExecutor.pendingCount)
-        profileComboBox.selectedItem = AgentProfile.CODEX_ACP
+        selectProfile(profileComboBox, AgentProfile.CODEX_ACP)
         assertEquals(2, queuedExecutor.pendingCount)
 
         queuedExecutor.runFirst()
@@ -590,8 +590,14 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
 
     private fun profileComboBox(root: Component): JComboBox<*> =
         descendantsOfType(root, JComboBox::class.java).single { comboBox ->
-            (0 until comboBox.itemCount).any { comboBox.getItemAt(it) is AgentProfile }
+            comboBoxItems(comboBox).containsAll(AgentProfile.entries.map { it.displayName })
         }
+
+    private fun selectProfile(comboBox: JComboBox<*>, profile: AgentProfile) {
+        comboBox.selectedItem = (0 until comboBox.itemCount)
+            .map { comboBox.getItemAt(it) }
+            .single { it.toString() == profile.displayName }
+    }
 
     private fun modelComboBox(root: Component): JComboBox<*> =
         descendantsOfType(root, JComboBox::class.java).single { comboBox ->

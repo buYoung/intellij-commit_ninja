@@ -10,7 +10,8 @@ data class CheckedChangeContext(
 )
 
 data class CommitMessageGenerationRequest(
-    val profile: AgentProfile,
+    val profileId: String,
+    val profileDisplayName: String,
     val command: String,
     val arguments: List<String>,
     val model: String?,
@@ -19,7 +20,34 @@ data class CommitMessageGenerationRequest(
     val changes: List<CheckedChangeContext>,
     val workingDirectory: String?,
     val languagePromptInstruction: String? = null,
-)
+) {
+    constructor(
+        profile: AgentProfile,
+        command: String,
+        arguments: List<String>,
+        model: String?,
+        userPrompt: String,
+        branchName: String?,
+        changes: List<CheckedChangeContext>,
+        workingDirectory: String?,
+        languagePromptInstruction: String? = null,
+    ) : this(
+        profileId = profile.profileId,
+        profileDisplayName = profile.displayName,
+        command = command,
+        arguments = arguments,
+        model = model,
+        userPrompt = userPrompt,
+        branchName = branchName,
+        changes = changes,
+        workingDirectory = workingDirectory,
+        languagePromptInstruction = languagePromptInstruction,
+    )
+
+    @Deprecated("Use profileId and profileDisplayName for generation diagnostics.")
+    val profile: AgentProfile
+        get() = AgentProfile.fromStoredName(profileId)
+}
 
 sealed class CommitMessageGenerationResult {
     data class Success(val message: String) : CommitMessageGenerationResult()
