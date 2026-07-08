@@ -11,6 +11,7 @@ import com.intellij.openapi.options.SearchableConfigurable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.ui.EditorTextField
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
 import com.livteam.commitninja.MyBundle
@@ -31,6 +32,7 @@ class CommitPromptConfigurable : SearchableConfigurable {
     ).apply {
         minimumSize = Dimension(0, 360)
     }
+    private val promptSyncCheckBox = JBCheckBox(MyBundle["settings.prompt.sync"])
 
     override fun getDisplayName(): String = MyBundle["settings.prompt.displayName"]
 
@@ -43,6 +45,9 @@ class CommitPromptConfigurable : SearchableConfigurable {
                     comment(MyBundle["settings.prompt.description"])
                 }
                 row {
+                    cell(promptSyncCheckBox)
+                }
+                row {
                     cell(promptEditor).align(Align.FILL)
                 }.resizableRow()
             }
@@ -52,21 +57,23 @@ class CommitPromptConfigurable : SearchableConfigurable {
     }
 
     override fun isModified(): Boolean {
-        val settings = CommitGenerationSettings.getInstance()
+        val settings = CommitPromptSettings.getInstance()
         settings.ensurePromptInitialized()
-        return settings.state.userPrompt.orEmpty() != promptEditor.text.trim()
+        return settings.resolvedUserPrompt != promptEditor.text.trim() ||
+            settings.isPromptSyncEnabled != promptSyncCheckBox.isSelected
     }
 
     override fun apply() {
-        val settings = CommitGenerationSettings.getInstance()
-        settings.state.userPrompt = promptEditor.text.trim()
-        settings.state.isPromptInitialized = true
+        val settings = CommitPromptSettings.getInstance()
+        settings.setUserPrompt(promptEditor.text.trim())
+        settings.isPromptSyncEnabled = promptSyncCheckBox.isSelected
     }
 
     override fun reset() {
-        val settings = CommitGenerationSettings.getInstance()
+        val settings = CommitPromptSettings.getInstance()
         settings.ensurePromptInitialized()
-        promptEditor.text = settings.state.userPrompt.orEmpty()
+        promptSyncCheckBox.isSelected = settings.isPromptSyncEnabled
+        promptEditor.text = settings.resolvedUserPrompt
         promptEditor.setCaretPosition(0)
     }
 

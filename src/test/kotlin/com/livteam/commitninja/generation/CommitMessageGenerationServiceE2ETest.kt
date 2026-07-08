@@ -4,6 +4,8 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.livteam.commitninja.settings.AgentProfile
 import com.livteam.commitninja.settings.CommitGenerationSettings
 import com.livteam.commitninja.settings.CommitLanguageRegion
+import com.livteam.commitninja.settings.CommitPromptSettings
+import com.livteam.commitninja.settings.CommitPromptSyncSettings
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.nio.file.Path
@@ -21,6 +23,10 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             state.arguments = ""
             state.model = ""
             state.languageRegionName = ""
+            state.userPrompt = ""
+            state.isPromptInitialized = false
+            CommitPromptSettings.getInstance().loadState(CommitPromptSettings.State())
+            CommitPromptSyncSettings.getInstance().loadState(CommitPromptSyncSettings.State())
         } finally {
             super.tearDown()
         }
@@ -122,6 +128,34 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             "Generation must not reuse the Codex model loading command.",
             request.arguments == listOf("debug", "models", "--bundled"),
         )
+    }
+
+    fun testRequestFromSettingsUsesCurrentPromptSettingsService() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+        state.model = "gpt-5.4-mini"
+        state.userPrompt = "Legacy prompt must not be used after prompt migration."
+        state.isPromptInitialized = true
+        CommitPromptSettings.getInstance().setUserPrompt("Current managed prompt.")
+        var capturedRequest: CommitMessageGenerationRequest? = null
+        val service = CommitMessageGenerationService(project) { request, _ ->
+            capturedRequest = request
+            CommitMessageGenerationResult.Success("feat: update app output")
+        }
+
+        val result = service.requestFromSettings(
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            branchName = "feature/current-prompt",
+        )
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+        assertEquals("Current managed prompt.", requireNotNull(capturedRequest).userPrompt)
     }
 
     fun testRequestFromSettingsAddsSelectedLanguageInstructionToPrompt() {

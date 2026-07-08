@@ -34,10 +34,7 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
         get() = AgentProfile.fromStoredName(state.profileName)
 
     val resolvedUserPrompt: String
-        get() {
-            ensurePromptInitialized()
-            return state.userPrompt.orEmpty().ifBlank { DefaultCommitPrompt.load() }
-        }
+        get() = CommitPromptSettings.getInstance().resolvedUserPrompt
 
     val resolvedCommand: String
         get() = state.command.orEmpty().ifBlank { profile.defaultCommand }
@@ -78,10 +75,7 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
     }
 
     fun ensurePromptInitialized() {
-        if (!state.isPromptInitialized || state.userPrompt.isNullOrBlank()) {
-            state.userPrompt = DefaultCommitPrompt.load()
-            state.isPromptInitialized = true
-        }
+        CommitPromptSettings.getInstance().ensurePromptInitialized()
     }
 
     companion object {

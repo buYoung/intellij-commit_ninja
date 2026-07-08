@@ -15,6 +15,8 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
+        <applicationService
+                serviceImplementation="com.livteam.commitninja.settings.CommitPromptSyncSettings"/>
         <applicationConfigurable
                 instance="com.livteam.commitninja.settings.CommitGenerationConfigurable"
                 id="com.livteam.commitninja.settings"

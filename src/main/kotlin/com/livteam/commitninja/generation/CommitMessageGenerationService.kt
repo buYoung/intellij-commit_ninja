@@ -6,6 +6,7 @@ import com.intellij.openapi.project.Project
 import com.livteam.commitninja.acp.AcpClient
 import com.livteam.commitninja.settings.AgentCommandLine
 import com.livteam.commitninja.settings.CommitGenerationSettings
+import com.livteam.commitninja.settings.CommitPromptSettings
 
 @Service(Service.Level.PROJECT)
 class CommitMessageGenerationService(private val project: Project) {
@@ -46,6 +47,7 @@ class CommitMessageGenerationService(private val project: Project) {
 
     fun requestFromSettings(changes: List<CheckedChangeContext>, branchName: String?): CommitMessageGenerationResult? {
         val settings = CommitGenerationSettings.getInstance()
+        val promptSettings = CommitPromptSettings.getInstance()
         val settingsDiagnostic = settings.configurationDiagnostic()
         if (!settingsDiagnostic.isConfigured) {
             LOG.warn(
@@ -64,7 +66,7 @@ class CommitMessageGenerationService(private val project: Project) {
             command = settings.resolvedCommand,
             arguments = AgentCommandLine.splitArguments(settings.resolvedArguments),
             model = settings.state.model?.takeIf { it.isNotBlank() },
-            userPrompt = settings.resolvedUserPrompt,
+            userPrompt = promptSettings.resolvedUserPrompt,
             languagePromptInstruction = settings.languagePromptInstruction,
             branchName = branchName,
             changes = changes,
