@@ -3,6 +3,7 @@ package com.livteam.commitninja.generation
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.livteam.commitninja.settings.AgentProfile
 import com.livteam.commitninja.settings.CommitGenerationSettings
+import com.livteam.commitninja.settings.CommitLanguageRegion
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.nio.file.Path
@@ -147,7 +148,9 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
 
         assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
         val prompt = requireNotNull(capturedPrompt)
-        assertTrue(prompt, "Language instruction: Write the commit message in Korean for Republic of Korea." in prompt)
+        assertFalse(prompt, "Language instruction:" in prompt)
+        assertFalse(prompt, "\$COMMIT_LANGUAGE_INSTRUCTION" in prompt)
+        assertTrue(prompt, "## Body\n\nWrite the commit message in Korean for Republic of Korea.\n\nDefault to one item" in prompt)
     }
 
     fun testRequestFromSettingsOmitsAutomaticLanguageInstructionForNone() {
@@ -175,6 +178,36 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
         val prompt = requireNotNull(capturedPrompt)
         assertFalse(prompt, "Language instruction:" in prompt)
+        assertFalse(prompt, "\$COMMIT_LANGUAGE_INSTRUCTION" in prompt)
+        assertTrue(prompt, "## Body\n\nDefault to one item" in prompt)
+    }
+
+    fun testDefaultPromptDocumentsUseLanguagePlaceholderOnly() {
+        val packagedPrompt = javaClass.classLoader.getResource("default_commit_message_prompt.md")
+            ?.readText(StandardCharsets.UTF_8)
+        val docsPrompt = Files.readString(Path.of("docs/default_commit_message_prompt.md"), StandardCharsets.UTF_8)
+
+        listOf(
+            requireNotNull(packagedPrompt),
+            docsPrompt,
+        ).forEach { defaultPrompt ->
+            assertTrue(defaultPrompt, "\$COMMIT_LANGUAGE_INSTRUCTION" in defaultPrompt)
+            assertFalse(defaultPrompt, "Write numbered items in the requested commit-message language." in defaultPrompt)
+            assertFalse(defaultPrompt, "Language instruction:" in defaultPrompt)
+        }
+    }
+
+    fun testSupportedCommitLanguageRegionsHaveExplicitInsertionTextExceptNone() {
+        val regionsWithInstruction = CommitLanguageRegion.entries.filterNot { it == CommitLanguageRegion.NONE }
+
+        assertEquals(10, regionsWithInstruction.size)
+        regionsWithInstruction.forEach { region ->
+            val instruction = region.promptInstruction
+            assertNotNull(region.displayName, instruction)
+            assertTrue(region.displayName, requireNotNull(instruction).isNotBlank())
+            assertTrue(instruction, region.displayName in instruction)
+        }
+        assertNull(CommitLanguageRegion.NONE.promptInstruction)
     }
 
     fun testReservedBranchNamesDoNotBecomeTicketIds() {

@@ -23,7 +23,7 @@ Ticket ID: use `$TICKET_ID` when it is not empty.
 
 ## Body
 
-Write numbered items in the requested commit-message language.
+$COMMIT_LANGUAGE_INSTRUCTION
 
 Default to one item: describe the main result a reader should remember.
 

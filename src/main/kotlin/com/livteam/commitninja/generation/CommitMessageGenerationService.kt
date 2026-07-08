@@ -78,12 +78,8 @@ class CommitMessageGenerationService(private val project: Project) {
 
     private fun buildPrompt(request: CommitMessageGenerationRequest): String {
         val prompt = StringBuilder(MAX_COMMIT_PROMPT_CHARS.coerceAtMost(16_384))
-        prompt.appendBoundedLine(request.userPrompt.trim())
+        prompt.appendBoundedLine(request.userPrompt.withCommitLanguageInstruction(request.languagePromptInstruction))
         prompt.appendBoundedLine()
-        request.languagePromptInstruction?.trim()?.takeIf { it.isNotBlank() }?.let { instruction ->
-            prompt.appendBoundedLine("Language instruction: $instruction")
-            prompt.appendBoundedLine()
-        }
         prompt.appendBoundedLine("Return only the final commit message. Do not include analysis, reasoning, alternatives, labels, or markdown fences.")
         prompt.appendBoundedLine(
             "The first line must be a Conventional Commit header, for example: feat(scope): concise summary or fix(scope)",
@@ -110,6 +106,13 @@ class CommitMessageGenerationService(private val project: Project) {
             prompt.appendBoundedLine(change.detail.limitToPromptDetail())
         }
         return prompt.toString()
+    }
+
+    private fun String.withCommitLanguageInstruction(languagePromptInstruction: String?): String {
+        val instruction = languagePromptInstruction?.trim().orEmpty()
+        return replace(COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER, instruction)
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
     }
 
     private fun StringBuilder.appendBoundedLine(line: String = "") {
@@ -160,6 +163,7 @@ class CommitMessageGenerationService(private val project: Project) {
         const val MAX_COMMIT_PROMPT_CHARS = 80_000
         const val MAX_CHANGE_DETAIL_CHARS = 12_000
         const val MAX_FAILURE_DIAGNOSTIC_CHARS = 2_000
+        const val COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER = "\$COMMIT_LANGUAGE_INSTRUCTION"
         val RESERVED_BRANCH_NAMES = setOf("main", "develop", "master", "staging")
     }
 }
