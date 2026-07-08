@@ -181,6 +181,45 @@ class AcpModelOptionsLoaderTest {
         assertTrue(message, "adapter missing" in message)
     }
 
+    @Test
+    fun `opencode model load retries after transient database lock`() {
+        val attemptFile = Files.createTempFile("fake-opencode-attempts", ".txt")
+        val fakeOpencode = fakeCommand(
+            """
+            #!/bin/sh
+            attempts=0
+            if [ -f '${attemptFile.toAbsolutePath()}' ]; then
+              attempts=${'$'}(cat '${attemptFile.toAbsolutePath()}')
+            fi
+            attempts=${'$'}((attempts + 1))
+            printf '%s' "${'$'}attempts" > '${attemptFile.toAbsolutePath()}'
+            if [ "${'$'}attempts" -eq 1 ]; then
+              printf 'Error: Unexpected error\n\ndatabase is locked\n' >&2
+              exit 1
+            fi
+            printf 'ollama-cloud/deepseek-v4-pro\nollama-cloud/deepseek-v4-flash\nollama-cloud/qwen3-coder-plus\n'
+            """.trimIndent(),
+        )
+
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.OPENCODE,
+            command = fakeOpencode.toAbsolutePath().toString(),
+            arguments = listOf("acp"),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.message.orEmpty(), result.isSuccess)
+        assertEquals(
+            listOf(
+                "ollama-cloud/deepseek-v4-pro",
+                "ollama-cloud/deepseek-v4-flash",
+                "ollama-cloud/qwen3-coder-plus",
+            ),
+            result.getOrThrow(),
+        )
+        assertEquals("2", attemptFile.readText())
+    }
+
     private fun fakeCommand(contents: String): Path {
         val command = Files.createTempFile("fake-model-command", ".sh")
         command.writeText(contents)

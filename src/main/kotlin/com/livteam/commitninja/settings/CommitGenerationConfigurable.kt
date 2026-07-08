@@ -3,25 +3,30 @@ package com.livteam.commitninja.settings
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.options.SearchableConfigurable
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
+import com.intellij.ui.IdeBorderFactory
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.livteam.commitninja.MyBundle
 import com.livteam.commitninja.acp.AgentModelOptionsLoader
+import java.awt.BorderLayout
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
-import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JComponent
-import javax.swing.SwingUtilities
-import javax.swing.event.DocumentEvent
-import javax.swing.event.DocumentListener
-import javax.swing.text.JTextComponent
+import javax.swing.JPanel
 
 class CommitGenerationConfigurable : SearchableConfigurable {
     constructor() : this(
@@ -49,35 +54,33 @@ class CommitGenerationConfigurable : SearchableConfigurable {
     private val uiDispatcher: (Runnable) -> Unit
     private val modelLoadGeneration = AtomicInteger()
     private var isResetting = false
-    private var isFilteringModelOptions = false
-    private var isRestoringCommittedModelSelection = false
-    private var committedModelFilterTextToIgnore: String? = null
-    private var pendingModelFilterText: String? = null
-    private var availableModelOptions = listOf(MODEL_AGENT_DEFAULT)
     private var component: JComponent? = null
     private val profileComboBox = ComboBox(AgentProfile.entries.toTypedArray())
-    private val modelComboBoxModel = DefaultComboBoxModel<String>()
-    private val modelComboBox = ComboBox(modelComboBoxModel)
-    private val languageSelector = SearchableStringComboBox(CommitLanguageRegion.entries.map { it.displayName })
+    private val modelSelector = SearchableStringComboBox(
+        options = listOf(MODEL_AGENT_DEFAULT),
+        isSearchMatchCandidate = { option -> option != MODEL_AGENT_DEFAULT },
+        restoresAllOptionsForExactQuery = false,
+    )
+    private val languageSelector = SearchableStringComboBox(
+        options = CommitLanguageRegion.entries.map { it.displayName },
+        allowBlankSelection = true,
+    )
     private val commandOverrideField = JBTextField()
     private val argumentsOverrideField = JBTextField()
     private val defaultCommandLabel = JBLabel()
     private val modelStatusLabel = JBLabel()
     private val loadModelsButton = JButton(MyBundle["settings.agent.loadModels"])
+    private val openOpencodeConfigButton = JButton(MyBundle["settings.opencode.openConfig"])
+    private val opencodeSettingsPanel = JPanel(BorderLayout()).apply {
+        border = IdeBorderFactory.createTitledBorder(MyBundle["settings.opencode.group"])
+        add(openOpencodeConfigButton, BorderLayout.WEST)
+    }
     private val confirmBeforeReplaceCheckBox = JBCheckBox(MyBundle["settings.replacement.confirmBeforeReplace"])
 
     init {
-        modelComboBox.isEditable = true
-        val modelEditor = modelComboBox.editor.editorComponent as? JTextComponent
-        modelEditor?.document?.addDocumentListener(
-            object : DocumentListener {
-                override fun insertUpdate(event: DocumentEvent) = scheduleModelFilter(modelEditor.text)
-                override fun removeUpdate(event: DocumentEvent) = scheduleModelFilter(modelEditor.text)
-                override fun changedUpdate(event: DocumentEvent) = scheduleModelFilter(modelEditor.text)
-            },
-        )
         profileComboBox.addActionListener {
             refreshDefaultCommandText()
+            updateOpencodeSettingsVisibility()
             if (!isResetting) {
                 LOG.info("ACP profile changed in settings: profile=${selectedProfile().name}; clearing stale model selection")
                 clearModelOptions()
@@ -85,10 +88,8 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                 loadModelOptions()
             }
         }
-        modelComboBox.addActionListener {
-            restoreModelOptionsAfterCommittedSelection()
-        }
         loadModelsButton.addActionListener { loadModelOptions() }
+        openOpencodeConfigButton.addActionListener { openOpencodeConfigFile() }
     }
 
     override fun getDisplayName(): String = MyBundle["settings.displayName"]
@@ -102,7 +103,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                     cell(profileComboBox).align(Align.FILL)
                 }
                 row(MyBundle["settings.agent.model"]) {
-                    cell(modelComboBox).align(Align.FILL)
+                    cell(modelSelector.comboBox).align(Align.FILL)
                     cell(loadModelsButton)
                 }
                 row {
@@ -128,6 +129,9 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                     comment(MyBundle["settings.agent.overrideComment"])
                 }
             }
+            row {
+                cell(opencodeSettingsPanel).align(Align.FILL)
+            }
             group(MyBundle["settings.replacement.group"]) {
                 row {
                     cell(confirmBeforeReplaceCheckBox)
@@ -152,7 +156,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                 argumentsOverrideField.text,
             ) ||
             state.model.orEmpty() != selectedModel() ||
-            state.languageRegionName.orEmpty() != selectedLanguageRegion().name ||
+            state.languageRegionName.orEmpty() != selectedLanguageRegionName() ||
             state.confirmBeforeReplace != confirmBeforeReplaceCheckBox.isSelected
     }
 
@@ -165,7 +169,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         settings.state.command = normalizedCommandOverride(selectedProfile, commandOverrideField.text)
         settings.state.arguments = normalizedArgumentsOverride(selectedProfile, argumentsOverrideField.text)
         settings.state.model = selectedModel
-        settings.state.languageRegionName = selectedLanguageRegion().name
+        settings.state.languageRegionName = selectedLanguageRegionName()
         settings.state.confirmBeforeReplace = confirmBeforeReplaceCheckBox.isSelected
     }
 
@@ -179,11 +183,10 @@ class CommitGenerationConfigurable : SearchableConfigurable {
             commandOverrideField.text = normalizedCommandOverride(profile, state.command.orEmpty())
             argumentsOverrideField.text = normalizedArgumentsOverride(profile, state.arguments.orEmpty())
             setModelOptions(emptyList(), state.model.orEmpty(), allowCustomSelection = true)
-            languageSelector.selectedValue = (
-                CommitLanguageRegion.fromStoredName(state.languageRegionName) ?: CommitLanguageRegion.NONE
-                ).displayName
+            languageSelector.selectedValue = CommitLanguageRegion.fromStoredName(state.languageRegionName)?.displayName.orEmpty()
             confirmBeforeReplaceCheckBox.isSelected = state.confirmBeforeReplace
             refreshDefaultCommandText()
+            updateOpencodeSettingsVisibility()
             modelStatusLabel.text = MyBundle["settings.agent.modelStatus.default"]
         } finally {
             isResetting = false
@@ -199,18 +202,14 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         profileComboBox.selectedItem as? AgentProfile ?: AgentProfile.NONE
 
     private fun selectedModel(): String {
-        val selected = (modelComboBox.editor.item ?: modelComboBox.selectedItem)
-            ?.toString()
-            .orEmpty()
-            .trim()
+        val selected = modelSelector.selectedValue
         return selected
-            .takeIf { it.isNotBlank() && it in availableModelOptions && it != MODEL_AGENT_DEFAULT }
+            .takeIf { it.isNotBlank() && it in modelSelector.options() && it != MODEL_AGENT_DEFAULT }
             .orEmpty()
     }
 
-    private fun selectedLanguageRegion(): CommitLanguageRegion =
-        CommitLanguageRegion.entries.firstOrNull { it.displayName == languageSelector.selectedValue }
-            ?: CommitLanguageRegion.NONE
+    private fun selectedLanguageRegionName(): String =
+        CommitLanguageRegion.entries.firstOrNull { it.displayName == languageSelector.selectedValue }?.name.orEmpty()
 
     private fun refreshDefaultCommandText() {
         val profile = selectedProfile()
@@ -223,117 +222,50 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         }
     }
 
+    private fun updateOpencodeSettingsVisibility() {
+        val isOpencode = selectedProfile() == AgentProfile.OPENCODE
+        opencodeSettingsPanel.isVisible = isOpencode
+        openOpencodeConfigButton.isVisible = isOpencode
+    }
+
+    private fun openOpencodeConfigFile() {
+        val configPath = resolveOpencodeConfigPath()
+        if (!Files.isRegularFile(configPath)) {
+            Messages.showInfoMessage(
+                MyBundle["settings.opencode.configMissing", configPath.toString()],
+                MyBundle["settings.opencode.configMissing.title"],
+            )
+            return
+        }
+        val virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(configPath)
+        val project = ProjectManager.getInstance().openProjects.firstOrNull { !it.isDisposed }
+        if (virtualFile == null || project == null) {
+            Messages.showInfoMessage(
+                MyBundle["settings.opencode.configCannotOpen", configPath.toString()],
+                MyBundle["settings.opencode.configCannotOpen.title"],
+            )
+            return
+        }
+        OpenFileDescriptor(project, virtualFile).navigate(true)
+    }
+
     private fun clearModelOptions() {
         modelLoadGeneration.incrementAndGet()
-        availableModelOptions = listOf(MODEL_AGENT_DEFAULT)
-        modelComboBox.editor.item = MODEL_AGENT_DEFAULT
-        filterModelOptions("")
-        modelComboBox.selectedItem = MODEL_AGENT_DEFAULT
-        modelComboBox.editor.item = MODEL_AGENT_DEFAULT
+        modelSelector.setOptions(listOf(MODEL_AGENT_DEFAULT), selectedValue = MODEL_AGENT_DEFAULT)
     }
 
     private fun setModelOptions(models: List<String>, selectedModel: String, allowCustomSelection: Boolean) {
-        availableModelOptions = buildList {
+        val modelOptions = buildList {
             add(MODEL_AGENT_DEFAULT)
             models.filter(String::isNotBlank).distinct().forEach(::add)
-            if (allowCustomSelection && selectedModel.isNotBlank() && selectedModel !in this) {
-                add(selectedModel)
-            }
         }
-        filterModelOptions("")
         val selectedModelOption = selectedModel
-            .takeIf { it.isNotBlank() && it in availableModelOptions }
+            .takeIf { it.isNotBlank() && (it in modelOptions || allowCustomSelection) }
             ?: MODEL_AGENT_DEFAULT
         if (selectedModel.isNotBlank() && selectedModelOption == MODEL_AGENT_DEFAULT) {
             LOG.info("Cleared stale ACP selected model for profile=${selectedProfile().name}: model=$selectedModel")
         }
-        modelComboBox.selectedItem = selectedModelOption
-        modelComboBox.editor.item = selectedModelOption
-    }
-
-    private fun scheduleModelFilter(query: String) {
-        if (isFilteringModelOptions) return
-        val trimmedQuery = query.trim()
-        if (
-            committedModelFilterTextToIgnore == trimmedQuery &&
-            trimmedQuery in availableModelOptions
-        ) {
-            committedModelFilterTextToIgnore = null
-            isRestoringCommittedModelSelection = true
-            try {
-                modelComboBox.selectedItem = trimmedQuery
-                modelComboBoxModel.selectedItem = trimmedQuery
-                modelComboBox.editor.item = trimmedQuery
-            } finally {
-                isRestoringCommittedModelSelection = false
-            }
-            return
-        }
-        pendingModelFilterText = query
-        SwingUtilities.invokeLater {
-            val filterText = pendingModelFilterText ?: return@invokeLater
-            pendingModelFilterText = null
-            filterModelOptions(filterText)
-        }
-    }
-
-    private fun filterModelOptions(query: String) {
-        if (isFilteringModelOptions) return
-        isFilteringModelOptions = true
-        try {
-            val trimmedQuery = query.trim()
-            val visibleModelOptions = if (trimmedQuery.isBlank()) {
-                availableModelOptions
-            } else {
-                availableModelOptions.filter { modelOption ->
-                    modelOption != MODEL_AGENT_DEFAULT && modelOption.contains(trimmedQuery, ignoreCase = true)
-                }
-            }
-            val editorText = (modelComboBox.editor.editorComponent as? JTextComponent)?.text.orEmpty()
-            val selectedItem = modelComboBox.selectedItem
-            modelComboBoxModel.removeAllElements()
-            visibleModelOptions.forEach(modelComboBoxModel::addElement)
-            if (editorText.isNotBlank()) {
-                modelComboBox.editor.item = editorText
-            } else if (selectedItem != null && selectedItem in visibleModelOptions) {
-                modelComboBox.selectedItem = selectedItem
-            }
-        } finally {
-            isFilteringModelOptions = false
-        }
-    }
-
-    private fun restoreModelOptionsAfterCommittedSelection() {
-        if (isResetting || isFilteringModelOptions || isRestoringCommittedModelSelection) return
-        val selectedModelOption = modelComboBox.selectedItem?.toString()?.trim().orEmpty()
-        if (selectedModelOption.isBlank() || selectedModelOption !in availableModelOptions) return
-        if (modelItems() == availableModelOptions) {
-            LOG.info("ACP model selected in settings: profile=${selectedProfile().name}, model=$selectedModelOption")
-            return
-        }
-        pendingModelFilterText = null
-        committedModelFilterTextToIgnore = selectedModelOption
-        isRestoringCommittedModelSelection = true
-        try {
-            LOG.info("ACP model selected from filtered settings list: profile=${selectedProfile().name}, model=$selectedModelOption; restoring loaded model list")
-            filterModelOptions("")
-            modelComboBox.selectedItem = selectedModelOption
-            modelComboBox.editor.item = selectedModelOption
-            SwingUtilities.invokeLater {
-                if (selectedModelOption in availableModelOptions && modelItems() == availableModelOptions) {
-                    isRestoringCommittedModelSelection = true
-                    try {
-                        modelComboBox.selectedItem = selectedModelOption
-                        modelComboBoxModel.selectedItem = selectedModelOption
-                        modelComboBox.editor.item = selectedModelOption
-                    } finally {
-                        isRestoringCommittedModelSelection = false
-                    }
-                }
-            }
-        } finally {
-            isRestoringCommittedModelSelection = false
-        }
+        modelSelector.setOptions(modelOptions, selectedModelOption, allowCustomSelection)
     }
 
     private fun loadModelOptions() {
@@ -417,11 +349,14 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         )
 
     private fun modelItems(): List<String> =
-        availableModelOptions
+        modelSelector.options()
             .filterNot { it == MODEL_AGENT_DEFAULT }
 
-    private companion object {
-        val LOG = Logger.getInstance(CommitGenerationConfigurable::class.java)
+    internal companion object {
+        private val LOG = Logger.getInstance(CommitGenerationConfigurable::class.java)
         const val MODEL_AGENT_DEFAULT = "Agent default"
+
+        fun resolveOpencodeConfigPath(userHome: String = System.getProperty("user.home")): Path =
+            Paths.get(userHome).resolve(".config").resolve("opencode").resolve("opencode.jsonc")
     }
 }

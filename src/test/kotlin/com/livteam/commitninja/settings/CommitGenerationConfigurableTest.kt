@@ -145,6 +145,52 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         configurable.disposeUIResources()
     }
 
+    fun testLanguageSelectorKeepsBlankStoredValueBlank() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.languageRegionName = ""
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals("", languageComboBox.editor.item?.toString().orEmpty())
+        assertNull(languageComboBox.selectedItem)
+        assertFalse("Blank language must not be forced to Germany after reset events.", languageComboBox.editor.item?.toString() == "Germany")
+
+        configurable.apply()
+
+        assertEquals("", CommitGenerationSettings.getInstance().state.languageRegionName.orEmpty())
+        assertFalse(CommitGenerationSettings.getInstance().state.languageRegionName == CommitLanguageRegion.UNITED_STATES.name)
+        assertFalse(CommitGenerationSettings.getInstance().state.languageRegionName == CommitLanguageRegion.GERMANY.name)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testLanguageSelectorKeepsBlankValueBlankAfterFilterEventsAndApply() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.languageRegionName = ""
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+        val editorComponent = languageComboBox.editor.editorComponent as JTextComponent
+
+        editorComponent.text = "Ger"
+        UIUtil.dispatchAllInvocationEvents()
+        editorComponent.text = ""
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals("", languageComboBox.editor.item?.toString().orEmpty())
+        assertNull(languageComboBox.selectedItem)
+
+        configurable.apply()
+
+        assertEquals("", CommitGenerationSettings.getInstance().state.languageRegionName.orEmpty())
+        assertFalse("Blank language must not be forced to Germany after filter events.", CommitGenerationSettings.getInstance().state.languageRegionName == CommitLanguageRegion.GERMANY.name)
+
+        configurable.disposeUIResources()
+    }
+
     fun testLanguageSelectorRestoresAllRegionsAfterSelectingNoneFromFilteredList() {
         val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
         val component = configurable.createComponent()
@@ -256,6 +302,64 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         assertEquals("gpt-5.4-mini", CommitGenerationSettings.getInstance().state.model)
 
         configurable.disposeUIResources()
+    }
+
+    fun testOllamaCloudModelSelectorKeepsAllLoadedModelsAfterSelection() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.OPENCODE.name
+        val loadedModels = listOf(
+            "ollama-cloud/deepseek-v4-pro",
+            "ollama-cloud/deepseek-v4-flash",
+            "ollama-cloud/qwen3-coder-plus",
+            "local/llama3.2",
+        )
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(loadedModels) }
+        val component = configurable.createComponent()
+        val modelComboBox = modelComboBox(component)
+        val editorComponent = modelComboBox.editor.editorComponent as JTextComponent
+
+        editorComponent.text = "ollama-cloud"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(loadedModels.take(3), modelItems(modelComboBox))
+
+        modelComboBox.selectedItem = "ollama-cloud/qwen3-coder-plus"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(listOf("Agent default") + loadedModels, modelItems(modelComboBox))
+        assertEquals("ollama-cloud/qwen3-coder-plus", editorComponent.text)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testOpencodeChildSettingsAreVisibleOnlyForOpencodeProfile() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.NONE.name
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val profileComboBox = profileComboBox(component)
+        val openConfigButton = descendantsOfType(component, JButton::class.java)
+            .single { it.text == "Open opencode.jsonc" }
+
+        assertFalse(openConfigButton.isVisible)
+
+        profileComboBox.selectedItem = AgentProfile.OPENCODE
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertTrue(openConfigButton.isVisible)
+
+        profileComboBox.selectedItem = AgentProfile.CODEX_ACP
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertFalse(openConfigButton.isVisible)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testOpencodeConfigPathUsesUserHome() {
+        val configPath = CommitGenerationConfigurable.resolveOpencodeConfigPath("/Users/example")
+
+        assertEquals("/Users/example/.config/opencode/opencode.jsonc", configPath.toString())
     }
 
     fun testCodexSettingsPathLoadsModelsWhenStoredCommandIsExplicitAcpCommand() {

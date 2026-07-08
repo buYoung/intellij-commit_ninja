@@ -47,6 +47,24 @@ object AcpModelOptionsLoader {
         }
 
         val fullCommand = listOf(command) + arguments
+        synchronized(MODEL_LOAD_LOCK) {
+            repeat(MODEL_LOAD_ATTEMPTS) { attemptIndex ->
+                val result = runCommandModels(fullCommand, workingDirectory, parser)
+                if (result.isSuccess || attemptIndex == MODEL_LOAD_ATTEMPTS - 1 || !result.isTransientDatabaseLockFailure()) {
+                    return result
+                }
+                LOG.warn("Retrying ACP profile model load after transient database lock: command=${formatCommand(fullCommand)}")
+                Thread.sleep(MODEL_LOAD_RETRY_DELAY_MILLIS)
+            }
+        }
+        return Result.failure(IllegalStateException("ACP profile model load failed without a result: command=${formatCommand(fullCommand)}"))
+    }
+
+    private fun runCommandModels(
+        fullCommand: List<String>,
+        workingDirectory: String?,
+        parser: (String) -> List<String>,
+    ): Result<List<String>> {
         LOG.info(
             "Starting ACP profile model load: command=${formatCommand(fullCommand)}, workingDirectory=${workingDirectory.orEmpty()}",
         )
@@ -117,6 +135,9 @@ object AcpModelOptionsLoader {
         }
     }
 
+    private fun Result<List<String>>.isTransientDatabaseLockFailure(): Boolean =
+        exceptionOrNull()?.message?.contains("database is locked", ignoreCase = true) == true
+
     private fun parseLineModels(output: String): List<String> =
         output.lineSequence()
             .map(String::trim)
@@ -174,7 +195,10 @@ object AcpModelOptionsLoader {
     private fun formatCommand(command: List<String>): String = command.joinToString(" ")
 
     private val LOG = Logger.getInstance(AcpModelOptionsLoader::class.java)
+    private val MODEL_LOAD_LOCK = Any()
     private val CLAUDE_BUILT_IN_MODELS = listOf("default", "opus", "sonnet", "haiku")
     private const val MAX_DIAGNOSTIC_CHARS = 1_000
     private const val MODEL_LOAD_TIMEOUT_SECONDS = 15L
+    private const val MODEL_LOAD_ATTEMPTS = 2
+    private const val MODEL_LOAD_RETRY_DELAY_MILLIS = 250L
 }
