@@ -10,6 +10,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
 import java.nio.charset.Charset
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -90,6 +91,24 @@ class CheckedCommitChangesProviderTest {
                 includedChanges = null,
             ),
         )
+    }
+
+    @Test
+    fun `collects included unversioned commit workflow files`() {
+        val provider = CheckedCommitChangesProvider()
+        val unversionedFile = Files.createTempFile("commit-ninja-unversioned", ".txt")
+        Files.writeString(unversionedFile, "new file content")
+
+        val contexts = provider.collectFromSources(
+            actionChanges = null,
+            includedChanges = emptyList(),
+            includedUnversionedFiles = listOf(TestFilePath(unversionedFile.toString())),
+        )
+
+        assertEquals(1, contexts.size)
+        assertEquals(unversionedFile.toString(), contexts.single().path)
+        assertEquals("NEW", contexts.single().status)
+        assertTrue(contexts.single().detail.contains("new file content"))
     }
 
     private fun change(path: String, before: String, after: String): Change =

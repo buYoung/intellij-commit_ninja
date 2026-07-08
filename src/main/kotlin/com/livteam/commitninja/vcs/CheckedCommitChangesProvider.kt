@@ -2,37 +2,45 @@ package com.livteam.commitninja.vcs
 
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vcs.FilePath
 import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import com.intellij.openapi.vcs.VcsException
 import com.intellij.openapi.vcs.VcsDataKeys
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ContentRevision
+import com.intellij.openapi.vcs.history.VcsRevisionNumber
 import com.livteam.commitninja.generation.CheckedChangeContext
+import java.io.IOException
+import java.nio.file.Files
 
 class CheckedCommitChangesProvider {
     fun hasCheckedChanges(event: AnActionEvent): Boolean =
         hasCheckedChangesFromSources(
             actionChanges = event.getData(VcsDataKeys.CHANGES),
             includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
+            includedUnversionedFiles = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedUnversionedFiles(),
         )
 
     fun checkedChangeCount(event: AnActionEvent): Int? =
         checkedChangeCountFromSources(
             actionChanges = event.getData(VcsDataKeys.CHANGES),
             includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
+            includedUnversionedFiles = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedUnversionedFiles(),
         )
 
     fun collect(event: AnActionEvent): List<CheckedChangeContext> =
         collectFromSources(
             actionChanges = event.getData(VcsDataKeys.CHANGES),
             includedChanges = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedChanges(),
+            includedUnversionedFiles = event.getData(VcsDataKeys.COMMIT_WORKFLOW_UI)?.getIncludedUnversionedFiles(),
         )
 
     fun collectFromSources(
         actionChanges: Array<Change>?,
         includedChanges: List<Change>?,
+        includedUnversionedFiles: List<FilePath>? = null,
     ): List<CheckedChangeContext> {
-        val changes = selectedChanges(actionChanges, includedChanges)
+        val changes = selectedChanges(actionChanges, includedChanges, includedUnversionedFiles)
         if (!changes.isNullOrEmpty()) {
             val contexts = mutableListOf<CheckedChangeContext>()
             var remainingDetailChars = MAX_COLLECTED_CHANGE_DETAIL_CHARS
@@ -53,17 +61,28 @@ class CheckedCommitChangesProvider {
     fun hasCheckedChangesFromSources(
         actionChanges: Array<Change>?,
         includedChanges: List<Change>?,
-    ): Boolean = !selectedChanges(actionChanges, includedChanges).isNullOrEmpty()
+        includedUnversionedFiles: List<FilePath>? = null,
+    ): Boolean = !selectedChanges(actionChanges, includedChanges, includedUnversionedFiles).isNullOrEmpty()
 
     fun checkedChangeCountFromSources(
         actionChanges: Array<Change>?,
         includedChanges: List<Change>?,
-    ): Int? = selectedChanges(actionChanges, includedChanges)?.size
+        includedUnversionedFiles: List<FilePath>? = null,
+    ): Int? = selectedChanges(actionChanges, includedChanges, includedUnversionedFiles)?.size
 
     private fun selectedChanges(
         actionChanges: Array<Change>?,
         includedChanges: List<Change>?,
-    ): List<Change>? = includedChanges ?: actionChanges?.toList()
+        includedUnversionedFiles: List<FilePath>?,
+    ): List<Change>? {
+        if (includedChanges != null || includedUnversionedFiles != null) {
+            return includedChanges.orEmpty() + includedUnversionedFiles.orEmpty().map { it.toNewChange() }
+        }
+        return actionChanges?.toList()
+    }
+
+    private fun FilePath.toNewChange(): Change =
+        Change(null, UnversionedContentRevision(this))
 
     fun currentBranchName(project: Project): String? =
         currentGitBranchName(project)
@@ -168,4 +187,17 @@ class CheckedCommitChangesProvider {
         val text: String,
         val isOmitted: Boolean,
     )
+
+    private class UnversionedContentRevision(private val filePath: FilePath) : ContentRevision {
+        override fun getContent(): String =
+            try {
+                Files.readString(filePath.ioFile.toPath(), filePath.charset)
+            } catch (exception: IOException) {
+                throw VcsException(exception)
+            }
+
+        override fun getFile(): FilePath = filePath
+
+        override fun getRevisionNumber(): VcsRevisionNumber = VcsRevisionNumber.NULL
+    }
 }

@@ -3,7 +3,6 @@ package com.livteam.commitninja.ui
 import com.intellij.diff.DiffContentFactory
 import com.intellij.diff.DiffManager
 import com.intellij.diff.requests.SimpleDiffRequest
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.livteam.commitninja.MyBundle
@@ -14,9 +13,11 @@ class GeneratedCommitMessageDiffDialog(
     private val project: Project,
     private val currentMessage: String,
     private val generatedMessage: String,
-) : DialogWrapper(project), Disposable {
-    var isApplySelected: Boolean = false
-        private set
+) : DialogWrapper(project) {
+    private val selection = GeneratedCommitMessageDiffDialogSelection()
+
+    val isApplySelected: Boolean
+        get() = selection.isApplySelected
 
     init {
         title = MyBundle["diff.review.title"]
@@ -33,7 +34,7 @@ class GeneratedCommitMessageDiffDialog(
             MyBundle["diff.generated.label"],
         )
         return DiffManager.getInstance()
-            .createRequestPanel(project, this, null)
+            .createRequestPanel(project, disposable, null)
             .apply { setRequest(request) }
             .component
     }
@@ -44,9 +45,25 @@ class GeneratedCommitMessageDiffDialog(
     }
 
     override fun doOKAction() {
-        isApplySelected = true
+        selection.selectApply()
         super.doOKAction()
     }
 
-    override fun dispose() = Unit
+    override fun doCancelAction() {
+        selection.clear()
+        super.doCancelAction()
+    }
+}
+
+internal class GeneratedCommitMessageDiffDialogSelection {
+    var isApplySelected: Boolean = false
+        private set
+
+    fun selectApply() {
+        isApplySelected = true
+    }
+
+    fun clear() {
+        isApplySelected = false
+    }
 }
