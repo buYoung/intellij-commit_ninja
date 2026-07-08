@@ -1,11 +1,16 @@
 package com.livteam.commitninja.generation
 
 object CommitMessageOutputParser {
+    private const val CONVENTIONAL_COMMIT_TYPES = "feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
     private val candidatePrefix = Regex("^\\s*(candidate|option|message)\\s*\\d*\\s*[:.)-]\\s*", RegexOption.IGNORE_CASE)
     private val explanatoryPrefix = Regex("^\\s*(here is|here's|commit message|generated commit message)\\b.*", RegexOption.IGNORE_CASE)
     private val conventionalCommitHeader = Regex(
-        "^(?:(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\([^\\r\\n()]+\\))?!?:\\s+\\S.*|" +
-            "(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)\\([^\\r\\n()]+\\)!?)$",
+        "^(?:(?:$CONVENTIONAL_COMMIT_TYPES)(\\([^\\r\\n()]+\\))?!?:\\s+\\S.*|" +
+            "(?:$CONVENTIONAL_COMMIT_TYPES)\\([^\\r\\n()]+\\)!?)$",
+    )
+    private val embeddedConventionalCommitHeader = Regex(
+        "(?<=[.!?。？！])((?:(?:$CONVENTIONAL_COMMIT_TYPES)(\\([^\\r\\n()]+\\))?!?:\\s+\\S.*|" +
+            "(?:$CONVENTIONAL_COMMIT_TYPES)\\([^\\r\\n()]+\\)!?))$",
     )
     private val multipleCandidateMarker = Regex("(?im)^\\s*(option|candidate)\\s+2\\b")
 
@@ -19,11 +24,13 @@ object CommitMessageOutputParser {
             .map { it.replace(candidatePrefix, "") }
             .toList()
 
-        val commitStartLine = candidateLines.indexOfLast { conventionalCommitHeader.matches(it.trim()) }
-        if (commitStartLine < 0) return null
+        val commitStart = candidateLines
+            .mapIndexedNotNull { lineIndex, line -> line.commitStartOrNull(lineIndex) }
+            .lastOrNull()
+            ?: return null
 
-        val parsedMessage = candidateLines
-            .drop(commitStartLine)
+        val parsedLines = listOf(commitStart.headerLine) + candidateLines.drop(commitStart.lineIndex + 1)
+        val parsedMessage = parsedLines
             .joinToString("\n")
             .trim()
 
@@ -32,4 +39,19 @@ object CommitMessageOutputParser {
         if (parsedMessage.length > 4000) return null
         return parsedMessage
     }
+
+    private fun String.commitStartOrNull(lineIndex: Int): CommitStart? {
+        val trimmedLine = trim()
+        if (conventionalCommitHeader.matches(trimmedLine)) {
+            return CommitStart(lineIndex, trimmedLine)
+        }
+        val embeddedHeader = embeddedConventionalCommitHeader.find(trimmedLine)?.groupValues?.get(1)
+            ?: return null
+        return CommitStart(lineIndex, embeddedHeader)
+    }
+
+    private data class CommitStart(
+        val lineIndex: Int,
+        val headerLine: String,
+    )
 }

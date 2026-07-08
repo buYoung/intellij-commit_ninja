@@ -11,6 +11,7 @@ import com.agentclientprotocol.model.ContentBlock
 import com.agentclientprotocol.model.Implementation
 import com.agentclientprotocol.model.ModelId
 import com.agentclientprotocol.model.PermissionOption
+import com.agentclientprotocol.model.PermissionOptionKind
 import com.agentclientprotocol.model.RequestPermissionOutcome
 import com.agentclientprotocol.model.RequestPermissionResponse
 import com.agentclientprotocol.model.SessionConfigId
@@ -18,6 +19,7 @@ import com.agentclientprotocol.model.SessionConfigOption
 import com.agentclientprotocol.model.SessionConfigOptionCategory
 import com.agentclientprotocol.model.SessionConfigOptionValue
 import com.agentclientprotocol.model.SessionUpdate
+import com.agentclientprotocol.model.ToolKind
 import com.agentclientprotocol.protocol.Protocol
 import com.agentclientprotocol.transport.StdioTransport
 import com.intellij.openapi.diagnostic.Logger
@@ -229,7 +231,15 @@ class AcpClient(private val project: Project) {
             toolCall: SessionUpdate.ToolCallUpdate,
             permissions: List<PermissionOption>,
             _meta: JsonElement?,
-        ): RequestPermissionResponse = RequestPermissionResponse(RequestPermissionOutcome.Cancelled)
+        ): RequestPermissionResponse {
+            val decision = AcpPermissionPolicy.decide(toolCall, permissions)
+            LOG.info(
+                "ACP permission decision: outcome=${decision.outcome}, reason=${decision.reason}, " +
+                    "toolKind=${toolCall.kind?.name.orEmpty()}, toolTitle=${toolCall.title?.boundedLogValue().orEmpty()}, " +
+                    "selectedOption=${decision.selectedOptionLogValue}",
+            )
+            return decision.response
+        }
 
         override suspend fun notify(notification: SessionUpdate, _meta: JsonElement?) {
             LOG.debug("ACP session notification outside prompt: $notification")
@@ -317,6 +327,60 @@ class AcpClient(private val project: Project) {
         val LOG = Logger.getInstance(AcpClient::class.java)
         const val MAX_ACP_TRANSCRIPT_CHARS = 120_000
         const val MAX_DIAGNOSTIC_CHARS = 2_000
-        const val GENERATION_TIMEOUT_MILLIS = 60_000L
+        const val GENERATION_TIMEOUT_MILLIS = 180_000L
     }
 }
+
+internal object AcpPermissionPolicy {
+    private val readOnlyToolKinds = setOf(ToolKind.READ, ToolKind.SEARCH, ToolKind.FETCH)
+    private val allowPermissionKinds = setOf(PermissionOptionKind.ALLOW_ONCE, PermissionOptionKind.ALLOW_ALWAYS)
+
+    fun decide(
+        toolCall: SessionUpdate.ToolCallUpdate,
+        permissions: List<PermissionOption>,
+    ): AcpPermissionDecision {
+        if (toolCall.kind !in readOnlyToolKinds) {
+            return AcpPermissionDecision.cancelled("non_read_only_tool")
+        }
+        val selectedOption = permissions
+            .filter { it.kind in allowPermissionKinds }
+            .minByOrNull { option ->
+                when (option.kind) {
+                    PermissionOptionKind.ALLOW_ONCE -> 0
+                    PermissionOptionKind.ALLOW_ALWAYS -> 1
+                    PermissionOptionKind.REJECT_ONCE -> 2
+                    PermissionOptionKind.REJECT_ALWAYS -> 3
+                }
+            }
+            ?: return AcpPermissionDecision.cancelled("no_allow_option")
+
+        return AcpPermissionDecision.selected(selectedOption)
+    }
+}
+
+internal data class AcpPermissionDecision(
+    val response: RequestPermissionResponse,
+    val outcome: String,
+    val reason: String,
+    val selectedOptionLogValue: String,
+) {
+    companion object {
+        fun selected(option: PermissionOption): AcpPermissionDecision =
+            AcpPermissionDecision(
+                response = RequestPermissionResponse(RequestPermissionOutcome.Selected(option.optionId)),
+                outcome = "selected",
+                reason = "read_only_tool",
+                selectedOptionLogValue = "${option.kind.name}:${option.name.boundedLogValue()}",
+            )
+
+        fun cancelled(reason: String): AcpPermissionDecision =
+            AcpPermissionDecision(
+                response = RequestPermissionResponse(RequestPermissionOutcome.Cancelled),
+                outcome = "cancelled",
+                reason = reason,
+                selectedOptionLogValue = "",
+            )
+    }
+}
+
+private fun String.boundedLogValue(): String = take(120)

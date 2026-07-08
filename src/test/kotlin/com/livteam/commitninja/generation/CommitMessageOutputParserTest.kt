@@ -48,6 +48,34 @@ class CommitMessageOutputParserTest : TestCase() {
         )
     }
 
+    fun testExtractsFinalCommitHeaderAttachedToPreviousProseSentence() {
+        val output = """
+            변경 내용을 보면 커밋 프롬프트 설정의 Git diff 지침과 출력 조건에 초점을 맞춰야 합니다.refactor(커밋 프롬프트 설정): Git diff 지침 정리
+
+            1. Git diff 기반 커밋 메시지 생성 조건을 명확히 한다.
+            2. 분석문 없이 최종 커밋 메시지만 출력하도록 프롬프트를 정리한다.
+        """.trimIndent()
+
+        assertEquals(
+            """
+            refactor(커밋 프롬프트 설정): Git diff 지침 정리
+
+            1. Git diff 기반 커밋 메시지 생성 조건을 명확히 한다.
+            2. 분석문 없이 최종 커밋 메시지만 출력하도록 프롬프트를 정리한다.
+            """.trimIndent(),
+            CommitMessageOutputParser.parse(output),
+        )
+    }
+
+    fun testDoesNotTreatInlineConventionalCommitExampleAsFinalHeader() {
+        val output = """
+            The final answer could use refactor(커밋 프롬프트 설정): Git diff 지침 정리 as a header.
+            It should include a numbered body, but this is still prose.
+        """.trimIndent()
+
+        assertNull(CommitMessageOutputParser.parse(output))
+    }
+
     fun testRejectsFragmentedProseWithoutConventionalCommitHeader() {
         val output = """
             The user wants me to generate a commit message.
