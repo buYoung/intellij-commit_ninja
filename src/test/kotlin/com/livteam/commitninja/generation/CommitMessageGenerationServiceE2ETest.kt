@@ -270,8 +270,14 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
 
             assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
             val prompt = requireNotNull(capturedPrompt)
-            assertTrue(prompt, "GIT_BRANCH_NAME=$branchName" in prompt)
-            assertTrue(prompt, "TICKET_ID=\n" in prompt)
+            assertTrue(prompt, branchName in prompt)
+            assertFalse(prompt, "\$GIT_BRANCH_NAME" in prompt)
+            assertFalse(prompt, "\$TICKET_ID" in prompt)
+            assertFalse(prompt, "GIT_BRANCH_NAME=" in prompt)
+            assertFalse(prompt, "TICKET_ID=" in prompt)
+            assertFalse(prompt, "Preferred model:" in prompt)
+            assertFalse(prompt, "Selected file contents:" in prompt)
+            assertTrue(prompt, "## Commit Message\n---\nPath: src/main/kotlin/App.kt" in prompt)
         }
     }
 
@@ -282,7 +288,9 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
         state.arguments = ""
         state.model = "gpt-5.4-mini"
         var capturedPrompt: String? = null
-        val service = CommitMessageGenerationService(project) { _, prompt ->
+        var capturedRequest: CommitMessageGenerationRequest? = null
+        val service = CommitMessageGenerationService(project) { request, prompt ->
+            capturedRequest = request
             capturedPrompt = prompt
             CommitMessageGenerationResult.Success("fix(scope): summary")
         }
@@ -300,8 +308,52 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
 
         assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
         val prompt = requireNotNull(capturedPrompt)
-        assertTrue(prompt, "GIT_BRANCH_NAME=feature/ACP-402-model-list" in prompt)
-        assertTrue(prompt, "TICKET_ID=feature/ACP-402-model-list" in prompt)
+        assertEquals("gpt-5.4-mini", requireNotNull(capturedRequest).model)
+        assertTrue(prompt, "feature/ACP-402-model-list" in prompt)
+        assertFalse(prompt, "\$GIT_BRANCH_NAME" in prompt)
+        assertFalse(prompt, "\$TICKET_ID" in prompt)
+        assertFalse(prompt, "GIT_BRANCH_NAME=" in prompt)
+        assertFalse(prompt, "TICKET_ID=" in prompt)
+        assertFalse(prompt, "Preferred model:" in prompt)
+        assertFalse(prompt, "Selected file contents:" in prompt)
+        assertTrue(prompt, "## Commit Message\n---\nPath: src/main/kotlin/App.kt" in prompt)
+    }
+
+    fun testOmittedChangeDetailsDoNotInsertWarningBeforeSelectedFileEntries() {
+        var capturedPrompt: String? = null
+        val service = CommitMessageGenerationService(project) { _, prompt ->
+            capturedPrompt = prompt
+            CommitMessageGenerationResult.Success("fix(scope): summary")
+        }
+
+        val result = service.generate(
+            CommitMessageGenerationRequest(
+                profile = AgentProfile.CODEX_ACP,
+                command = "",
+                arguments = emptyList(),
+                model = "gpt-5.4-mini",
+                userPrompt = "Write a concise Conventional Commit message.",
+                branchName = "feature/ACP-402-model-list",
+                changes = listOf(
+                    CheckedChangeContext(
+                        path = "src/main/kotlin/App.kt",
+                        status = "MODIFIED",
+                        detail = "<change detail omitted due to collection budget>",
+                        isDetailOmitted = true,
+                    ),
+                ),
+                workingDirectory = System.getProperty("user.dir"),
+            ),
+        )
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+        val prompt = requireNotNull(capturedPrompt)
+        assertTrue(prompt, "## Commit Message\n---\nPath: src/main/kotlin/App.kt" in prompt)
+        assertFalse(prompt, "Checked-change detail was truncated" in prompt)
+        assertFalse(prompt, "GIT_BRANCH_NAME=" in prompt)
+        assertFalse(prompt, "TICKET_ID=" in prompt)
+        assertFalse(prompt, "Preferred model:" in prompt)
+        assertFalse(prompt, "Selected file contents:" in prompt)
     }
 
     fun testFailureInputDiagnosticUsesInputPromptSection() {

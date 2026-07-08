@@ -9,6 +9,7 @@ import com.intellij.ui.dsl.builder.Align
 import com.intellij.ui.dsl.builder.panel
 import com.livteam.commitninja.MyBundle
 import java.awt.Dimension
+import javax.swing.JCheckBox
 import javax.swing.JComponent
 
 class CommitChangeCollectionConfigurable : SearchableConfigurable {
@@ -18,6 +19,7 @@ class CommitChangeCollectionConfigurable : SearchableConfigurable {
         minimumSize = Dimension(0, 220)
     }
     private val maxCommitListSizeField = JBTextField()
+    private val smartDocumentBudgetingCheckBox = JCheckBox(MyBundle["settings.changeCollection.smartDocumentBudgeting"])
 
     override fun getDisplayName(): String = MyBundle["settings.changeCollection.displayName"]
 
@@ -33,6 +35,10 @@ class CommitChangeCollectionConfigurable : SearchableConfigurable {
                     cell(maxCommitListSizeField)
                         .align(Align.FILL)
                         .comment(MyBundle["settings.changeCollection.maxCommitListSize.comment"])
+                }
+                row {
+                    cell(smartDocumentBudgetingCheckBox)
+                        .comment(MyBundle["settings.changeCollection.smartDocumentBudgeting.comment"])
                 }
                 row {
                     label(MyBundle["settings.changeCollection.patchExcludedFilePatterns"])
@@ -51,7 +57,8 @@ class CommitChangeCollectionConfigurable : SearchableConfigurable {
     override fun isModified(): Boolean {
         val settings = CommitChangeCollectionSettings.getInstance()
         return settings.state.patchExcludedFilePatterns.orEmpty() != patchExcludedFilePatternsArea.text.trim() ||
-            settings.state.maxCommitListSize != parsedMaxCommitListSizeOrNull()
+            settings.state.maxCommitListSize != parsedMaxCommitListSizeOrNull() ||
+            settings.state.smartDocumentBudgetingEnabled != smartDocumentBudgetingCheckBox.isSelected
     }
 
     override fun apply() {
@@ -61,6 +68,7 @@ class CommitChangeCollectionConfigurable : SearchableConfigurable {
         val settings = CommitChangeCollectionSettings.getInstance()
         settings.state.patchExcludedFilePatterns = patchExcludedFilePatternsArea.text.trim()
         settings.state.maxCommitListSize = parseMaxCommitListSize()
+        settings.state.smartDocumentBudgetingEnabled = smartDocumentBudgetingCheckBox.isSelected
     }
 
     override fun reset() {
@@ -68,6 +76,7 @@ class CommitChangeCollectionConfigurable : SearchableConfigurable {
         patchExcludedFilePatternsArea.text = settings.state.patchExcludedFilePatterns.orEmpty()
         patchExcludedFilePatternsArea.caretPosition = 0
         maxCommitListSizeField.text = settings.state.maxCommitListSize.toString()
+        smartDocumentBudgetingCheckBox.isSelected = settings.state.smartDocumentBudgetingEnabled
     }
 
     override fun disposeUIResources() {

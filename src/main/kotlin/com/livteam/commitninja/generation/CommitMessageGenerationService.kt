@@ -96,7 +96,7 @@ class CommitMessageGenerationService(private val project: Project) {
 
     private fun buildPrompt(request: CommitMessageGenerationRequest): String {
         val prompt = StringBuilder(MAX_COMMIT_PROMPT_CHARS.coerceAtMost(16_384))
-        prompt.appendBoundedLine(request.userPrompt.withCommitLanguageInstruction(request.languagePromptInstruction))
+        prompt.appendBoundedLine(request.userPrompt.withPromptPlaceholders(request))
         prompt.appendBoundedLine()
         prompt.appendBoundedLine("Return only the final commit message. Do not include analysis, reasoning, alternatives, labels, or markdown fences.")
         prompt.appendBoundedLine(
@@ -105,19 +105,7 @@ class CommitMessageGenerationService(private val project: Project) {
         prompt.appendBoundedLine("Always include a blank line and at least one numbered body item after the header.")
         prompt.appendBoundedLine("Never return only the Conventional Commit header.")
         prompt.appendBoundedLine()
-        prompt.appendBoundedLine("GIT_BRANCH_NAME=${request.branchName.orEmpty()}")
-        prompt.appendBoundedLine("TICKET_ID=${request.branchName.derivedTicketId().orEmpty()}")
-        request.model?.let {
-            prompt.appendBoundedLine("Preferred model: $it")
-        }
-        prompt.appendBoundedLine()
-        prompt.appendBoundedLine("Git patch for checked changes:")
-        val omittedDetailCount = request.changes.count { it.isDetailOmitted }
-        if (omittedDetailCount > 0) {
-            prompt.appendBoundedLine(
-                "Checked-change detail was truncated for $omittedDetailCount file(s). See per-file patch notes when details are omitted.",
-            )
-        }
+        prompt.appendBoundedLine("## Commit Message")
         for (change in request.changes) {
             if (prompt.length >= MAX_COMMIT_PROMPT_CHARS) break
             prompt.appendBoundedLine("---")
@@ -128,9 +116,11 @@ class CommitMessageGenerationService(private val project: Project) {
         return prompt.toString()
     }
 
-    private fun String.withCommitLanguageInstruction(languagePromptInstruction: String?): String {
-        val instruction = languagePromptInstruction?.trim().orEmpty()
-        return replace(COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER, instruction)
+    private fun String.withPromptPlaceholders(request: CommitMessageGenerationRequest): String {
+        val languageInstruction = request.languagePromptInstruction?.trim().orEmpty()
+        return replace(COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER, languageInstruction)
+            .replace(GIT_BRANCH_NAME_PLACEHOLDER, request.branchName.orEmpty())
+            .replace(TICKET_ID_PLACEHOLDER, request.branchName.derivedTicketId().orEmpty())
             .replace(Regex("\\n{3,}"), "\n\n")
             .trim()
     }
@@ -184,6 +174,8 @@ class CommitMessageGenerationService(private val project: Project) {
         const val MAX_CHANGE_DETAIL_CHARS = 200_000
         const val MAX_FAILURE_DIAGNOSTIC_CHARS = 2_000
         const val COMMIT_LANGUAGE_INSTRUCTION_PLACEHOLDER = "\$COMMIT_LANGUAGE_INSTRUCTION"
+        const val GIT_BRANCH_NAME_PLACEHOLDER = "\$GIT_BRANCH_NAME"
+        const val TICKET_ID_PLACEHOLDER = "\$TICKET_ID"
         val RESERVED_BRANCH_NAMES = setOf("main", "develop", "master", "staging")
     }
 }

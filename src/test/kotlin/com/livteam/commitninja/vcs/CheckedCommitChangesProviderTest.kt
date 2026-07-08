@@ -111,6 +111,43 @@ class CheckedCommitChangesProviderTest {
         assertTrue(contexts.single().detail.contains("new file content"))
     }
 
+    @Test
+    fun `smart document budgeting collects source changes before large document changes`() {
+        val provider = CheckedCommitChangesProvider(
+            smartDocumentBudgetingEnabledProvider = { true },
+        )
+        val largeDocumentChange = change("docs/guide.md", "", "d".repeat(199_980))
+        val sourceChange = change("src/App.kt", "fun main() = Unit", "fun main() = println(\"new\")")
+
+        val contexts = provider.collectFromSources(
+            actionChanges = arrayOf(largeDocumentChange, sourceChange),
+            includedChanges = null,
+        )
+
+        assertEquals(listOf("src/App.kt", "docs/guide.md"), contexts.map { it.path })
+        assertTrue(contexts[0].detail.contains("println(\"new\")"))
+        assertEquals(true, contexts[1].isDetailOmitted)
+    }
+
+    @Test
+    fun `disabled smart document budgeting preserves selected order`() {
+        val provider = CheckedCommitChangesProvider(
+            smartDocumentBudgetingEnabledProvider = { false },
+        )
+        val largeDocumentChange = change("docs/guide.md", "", "d".repeat(199_980))
+        val sourceChange = change("src/App.kt", "fun main() = Unit", "fun main() = println(\"new\")")
+
+        val contexts = provider.collectFromSources(
+            actionChanges = arrayOf(largeDocumentChange, sourceChange),
+            includedChanges = null,
+        )
+
+        assertEquals(listOf("docs/guide.md", "src/App.kt"), contexts.map { it.path })
+        assertEquals(true, contexts[0].isDetailOmitted)
+        assertEquals(true, contexts[1].isDetailOmitted)
+        assertTrue(contexts[1].detail.contains("collection detail budget was exhausted"))
+    }
+
     private fun change(path: String, before: String, after: String): Change =
         Change(StringRevision(path, before), StringRevision(path, after))
 

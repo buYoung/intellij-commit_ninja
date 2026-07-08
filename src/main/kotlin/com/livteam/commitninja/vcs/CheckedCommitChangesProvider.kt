@@ -19,6 +19,9 @@ class CheckedCommitChangesProvider(
     private val patchExcludedFilePatternsProvider: () -> List<PatchExcludedFileRegex> = {
         CommitChangeCollectionSettings.getInstance().resolvedPatchExcludedFilePatterns
     },
+    private val smartDocumentBudgetingEnabledProvider: () -> Boolean = {
+        CommitChangeCollectionSettings.getInstance().resolvedSmartDocumentBudgetingEnabled
+    },
 ) {
     fun hasCheckedChanges(event: AnActionEvent): Boolean =
         hasCheckedChangesFromSources(
@@ -50,7 +53,7 @@ class CheckedCommitChangesProvider(
         if (!changes.isNullOrEmpty()) {
             val contexts = mutableListOf<CheckedChangeContext>()
             var remainingDetailChars = MAX_COLLECTED_CHANGE_DETAIL_CHARS
-            for (change in changes) {
+            for (change in changes.prioritizeSourceChangesIfEnabled()) {
                 val context = change.toContext(remainingDetailChars)
                 contexts += context
                 if (!context.isDetailOmitted) {
@@ -89,6 +92,21 @@ class CheckedCommitChangesProvider(
 
     private fun FilePath.toNewChange(): Change =
         Change(null, UnversionedContentRevision(this))
+
+    private fun List<Change>.prioritizeSourceChangesIfEnabled(): List<Change> {
+        if (!smartDocumentBudgetingEnabledProvider()) return this
+        val (documentChanges, sourceChanges) = partition { it.isDocumentLikeChange() }
+        return sourceChanges + documentChanges
+    }
+
+    private fun Change.isDocumentLikeChange(): Boolean {
+        val path = afterRevision?.file?.path ?: beforeRevision?.file?.path ?: virtualFile?.path ?: return false
+        val extension = path.replace('\\', '/')
+            .substringAfterLast('/')
+            .substringAfterLast('.', missingDelimiterValue = "")
+            .lowercase()
+        return extension in DOCUMENT_LIKE_EXTENSIONS
+    }
 
     fun currentBranchName(project: Project): String? =
         currentGitBranchName(project)
@@ -292,6 +310,20 @@ class CheckedCommitChangesProvider(
         const val MAX_PATCH_SOURCE_CHARS = 200_000
         const val MAX_PATCH_SOURCE_LINES = 20_000
         const val DETAIL_OMITTED_MESSAGE = "<checked-change detail omitted because the collection detail budget was exhausted>"
+        val DOCUMENT_LIKE_EXTENSIONS = setOf(
+            "txt",
+            "md",
+            "markdown",
+            "json",
+            "jsonc",
+            "yaml",
+            "yml",
+            "xml",
+            "csv",
+            "tsv",
+            "log",
+            "properties",
+        )
     }
 
     private data class CollectedDetail(

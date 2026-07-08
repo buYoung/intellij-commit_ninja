@@ -19,6 +19,7 @@ class CommitChangeCollectionSettings : SimplePersistentStateComponent<CommitChan
     class State : BaseState() {
         var patchExcludedFilePatterns by string(DEFAULT_PATCH_EXCLUDED_FILE_PATTERNS)
         var maxCommitListSize by property(0)
+        var smartDocumentBudgetingEnabled by property(true)
     }
 
     val resolvedPatchExcludedFilePatterns: List<PatchExcludedFileRegex>
@@ -26,6 +27,9 @@ class CommitChangeCollectionSettings : SimplePersistentStateComponent<CommitChan
 
     val resolvedMaxCommitListSize: Int?
         get() = state.maxCommitListSize.takeIf { it > 0 }
+
+    val resolvedSmartDocumentBudgetingEnabled: Boolean
+        get() = state.smartDocumentBudgetingEnabled
 
     companion object {
         val DEFAULT_PATCH_EXCLUDED_FILE_PATTERNS = listOf(
