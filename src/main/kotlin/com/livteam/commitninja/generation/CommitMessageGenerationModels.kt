@@ -18,6 +18,7 @@ data class CommitMessageGenerationRequest(
     val branchName: String?,
     val changes: List<CheckedChangeContext>,
     val workingDirectory: String?,
+    val languagePromptInstruction: String? = null,
 )
 
 sealed class CommitMessageGenerationResult {

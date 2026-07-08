@@ -22,6 +22,7 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
         var command by string("")
         var arguments by string("")
         var model by string("")
+        var languageRegionName by string("")
         var userPrompt by string("")
         var confirmBeforeReplace by property(true)
 
@@ -43,6 +44,12 @@ class CommitGenerationSettings : SimplePersistentStateComponent<CommitGeneration
 
     val resolvedArguments: String
         get() = state.arguments.orEmpty().ifBlank { profile.defaultArguments }
+
+    val languageRegion: CommitLanguageRegion?
+        get() = CommitLanguageRegion.fromStoredName(state.languageRegionName)
+
+    val languagePromptInstruction: String?
+        get() = languageRegion?.promptInstruction
 
     fun isConfigured(): Boolean =
         configurationDiagnostic().isConfigured

@@ -14,7 +14,7 @@ Omit the entire `: <Ticket ID>` suffix when no ticket ID exists.
 
 Type: choose one from `feat`, `fix`, `refactor`, `docs`, `style`, `test`, `chore`, `perf`, `ci`, `build` by reading the patch.
 
-Scope: short Korean phrase for the changed feature, screen, API, or work area. Avoid file and folder names unless they are the clearest names.
+Scope: short phrase for the changed feature, screen, API, or work area. Avoid file and folder names unless they are the clearest names.
 
 Ticket ID: use `$TICKET_ID` when it is not empty.
 
@@ -23,7 +23,7 @@ Ticket ID: use `$TICKET_ID` when it is not empty.
 
 ## Body
 
-Write Korean numbered items.
+Write numbered items in the requested commit-message language.
 
 Default to one item: describe the main result a reader should remember.
 
@@ -36,7 +36,7 @@ Write by result, not by file, class, function, or code block.
 Keep it easy to read:
 
 - Use plain words.
-- Avoid hard technical words when simple Korean works.
+- Avoid hard technical words when simple wording works.
 - Combine related details into one natural sentence.
 - Do not include file paths, code snippets, or line numbers.
 

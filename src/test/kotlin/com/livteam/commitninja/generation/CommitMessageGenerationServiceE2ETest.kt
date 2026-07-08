@@ -12,6 +12,19 @@ import kotlin.io.path.exists
 import kotlin.io.path.writeText
 
 class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
+    override fun tearDown() {
+        try {
+            val state = CommitGenerationSettings.getInstance().state
+            state.profileName = AgentProfile.NONE.name
+            state.command = ""
+            state.arguments = ""
+            state.model = ""
+            state.languageRegionName = ""
+        } finally {
+            super.tearDown()
+        }
+    }
+
     fun testGeneratesCommitMessageThroughOpencodeLocalAcpBoundary() {
         assertGeneratesCommitMessageWithModel(
             profile = AgentProfile.OPENCODE,
@@ -108,6 +121,60 @@ class CommitMessageGenerationServiceE2ETest : BasePlatformTestCase() {
             "Generation must not reuse the Codex model loading command.",
             request.arguments == listOf("debug", "models", "--bundled"),
         )
+    }
+
+    fun testRequestFromSettingsAddsSelectedLanguageInstructionToPrompt() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+        state.model = "gpt-5.4-mini"
+        state.languageRegionName = "REPUBLIC_OF_KOREA"
+        var capturedPrompt: String? = null
+        val service = CommitMessageGenerationService(project) { _, prompt ->
+            capturedPrompt = prompt
+            CommitMessageGenerationResult.Success("feat: 앱 출력 변경")
+        }
+
+        val result = service.requestFromSettings(
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            branchName = "feature/language-prompt",
+        )
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+        val prompt = requireNotNull(capturedPrompt)
+        assertTrue(prompt, "Language instruction: Write the commit message in Korean for Republic of Korea." in prompt)
+    }
+
+    fun testRequestFromSettingsOmitsAutomaticLanguageInstructionForNone() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.CODEX_ACP.name
+        state.model = "gpt-5.4-mini"
+        state.languageRegionName = "NONE"
+        var capturedPrompt: String? = null
+        val service = CommitMessageGenerationService(project) { _, prompt ->
+            capturedPrompt = prompt
+            CommitMessageGenerationResult.Success("feat: update app output")
+        }
+
+        val result = service.requestFromSettings(
+            changes = listOf(
+                CheckedChangeContext(
+                    path = "src/main/kotlin/App.kt",
+                    status = "MODIFIED",
+                    detail = "+println(\"new\")",
+                ),
+            ),
+            branchName = "feature/language-none",
+        )
+
+        assertTrue(result.toString(), result is CommitMessageGenerationResult.Success)
+        val prompt = requireNotNull(capturedPrompt)
+        assertFalse(prompt, "Language instruction:" in prompt)
     }
 
     fun testReservedBranchNamesDoNotBecomeTicketIds() {

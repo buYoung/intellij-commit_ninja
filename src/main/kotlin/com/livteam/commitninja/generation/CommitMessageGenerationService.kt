@@ -65,6 +65,7 @@ class CommitMessageGenerationService(private val project: Project) {
             arguments = AgentCommandLine.splitArguments(settings.resolvedArguments),
             model = settings.state.model?.takeIf { it.isNotBlank() },
             userPrompt = settings.resolvedUserPrompt,
+            languagePromptInstruction = settings.languagePromptInstruction,
             branchName = branchName,
             changes = changes,
             workingDirectory = project.basePath,
@@ -79,6 +80,10 @@ class CommitMessageGenerationService(private val project: Project) {
         val prompt = StringBuilder(MAX_COMMIT_PROMPT_CHARS.coerceAtMost(16_384))
         prompt.appendBoundedLine(request.userPrompt.trim())
         prompt.appendBoundedLine()
+        request.languagePromptInstruction?.trim()?.takeIf { it.isNotBlank() }?.let { instruction ->
+            prompt.appendBoundedLine("Language instruction: $instruction")
+            prompt.appendBoundedLine()
+        }
         prompt.appendBoundedLine("Return only the final commit message. Do not include analysis, reasoning, alternatives, labels, or markdown fences.")
         prompt.appendBoundedLine(
             "The first line must be a Conventional Commit header, for example: feat(scope): concise summary or fix(scope)",

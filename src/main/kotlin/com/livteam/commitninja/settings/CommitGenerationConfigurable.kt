@@ -58,6 +58,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
     private val profileComboBox = ComboBox(AgentProfile.entries.toTypedArray())
     private val modelComboBoxModel = DefaultComboBoxModel<String>()
     private val modelComboBox = ComboBox(modelComboBoxModel)
+    private val languageSelector = SearchableStringComboBox(CommitLanguageRegion.entries.map { it.displayName })
     private val commandOverrideField = JBTextField()
     private val argumentsOverrideField = JBTextField()
     private val defaultCommandLabel = JBLabel()
@@ -108,6 +109,11 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                     cell(modelStatusLabel).align(Align.FILL)
                 }
             }
+            group(MyBundle["settings.language.group"]) {
+                row(MyBundle["settings.language.region"]) {
+                    cell(languageSelector.comboBox).align(Align.FILL)
+                }
+            }
             group(MyBundle["settings.agent.advanced"]) {
                 row {
                     cell(defaultCommandLabel).align(Align.FILL)
@@ -146,6 +152,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
                 argumentsOverrideField.text,
             ) ||
             state.model.orEmpty() != selectedModel() ||
+            state.languageRegionName.orEmpty() != selectedLanguageRegion().name ||
             state.confirmBeforeReplace != confirmBeforeReplaceCheckBox.isSelected
     }
 
@@ -158,6 +165,7 @@ class CommitGenerationConfigurable : SearchableConfigurable {
         settings.state.command = normalizedCommandOverride(selectedProfile, commandOverrideField.text)
         settings.state.arguments = normalizedArgumentsOverride(selectedProfile, argumentsOverrideField.text)
         settings.state.model = selectedModel
+        settings.state.languageRegionName = selectedLanguageRegion().name
         settings.state.confirmBeforeReplace = confirmBeforeReplaceCheckBox.isSelected
     }
 
@@ -171,6 +179,9 @@ class CommitGenerationConfigurable : SearchableConfigurable {
             commandOverrideField.text = normalizedCommandOverride(profile, state.command.orEmpty())
             argumentsOverrideField.text = normalizedArgumentsOverride(profile, state.arguments.orEmpty())
             setModelOptions(emptyList(), state.model.orEmpty(), allowCustomSelection = true)
+            languageSelector.selectedValue = (
+                CommitLanguageRegion.fromStoredName(state.languageRegionName) ?: CommitLanguageRegion.NONE
+                ).displayName
             confirmBeforeReplaceCheckBox.isSelected = state.confirmBeforeReplace
             refreshDefaultCommandText()
             modelStatusLabel.text = MyBundle["settings.agent.modelStatus.default"]
@@ -196,6 +207,10 @@ class CommitGenerationConfigurable : SearchableConfigurable {
             .takeIf { it.isNotBlank() && it in availableModelOptions && it != MODEL_AGENT_DEFAULT }
             .orEmpty()
     }
+
+    private fun selectedLanguageRegion(): CommitLanguageRegion =
+        CommitLanguageRegion.entries.firstOrNull { it.displayName == languageSelector.selectedValue }
+            ?: CommitLanguageRegion.NONE
 
     private fun refreshDefaultCommandText() {
         val profile = selectedProfile()

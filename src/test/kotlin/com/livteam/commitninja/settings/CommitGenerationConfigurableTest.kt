@@ -18,6 +18,7 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
             state.command = ""
             state.arguments = ""
             state.model = ""
+            state.languageRegionName = ""
             state.confirmBeforeReplace = true
         } finally {
             super.tearDown()
@@ -108,6 +109,102 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
 
         assertEquals(listOf("gpt-5.4", "gpt-5.4-mini"), modelItems(modelComboBox))
         assertEquals("gpt-5.4", editorComponent.text)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testLanguageSelectorIsSearchableEditableComboBox() {
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+
+        assertTrue("Language selector must be editable so users can type to search/select.", languageComboBox.isEditable)
+        val editorComponent = languageComboBox.editor.editorComponent
+        assertTrue("Editable language selector should expose a text editor component.", editorComponent is JTextComponent)
+        (editorComponent as JTextComponent).text = "Korea"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(listOf("Republic of Korea"), comboBoxItems(languageComboBox))
+        assertEquals("Korea", editorComponent.text)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testLanguageSelectorShowsAllRegionsAfterResetWithNoneSelected() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.languageRegionName = CommitLanguageRegion.NONE.name
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(languageRegionDisplayNames(), comboBoxItems(languageComboBox))
+        assertEquals("None", languageComboBox.editor.item?.toString())
+
+        configurable.disposeUIResources()
+    }
+
+    fun testLanguageSelectorRestoresAllRegionsAfterSelectingNoneFromFilteredList() {
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+        val editorComponent = languageComboBox.editor.editorComponent as JTextComponent
+
+        editorComponent.text = "None"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(languageRegionDisplayNames(), comboBoxItems(languageComboBox))
+
+        languageComboBox.selectedItem = "None"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(languageRegionDisplayNames(), comboBoxItems(languageComboBox))
+        assertEquals("None", editorComponent.text)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testLanguageSelectorRestoresAllRegionsAfterSelectingCountryFromFilteredList() {
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+        val editorComponent = languageComboBox.editor.editorComponent as JTextComponent
+
+        editorComponent.text = "Korea"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(listOf("Republic of Korea"), comboBoxItems(languageComboBox))
+
+        languageComboBox.selectedItem = "Republic of Korea"
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertEquals(languageRegionDisplayNames(), comboBoxItems(languageComboBox))
+        assertEquals("Republic of Korea", editorComponent.text)
+
+        configurable.disposeUIResources()
+    }
+
+    fun testSettingsUiHasDedicatedLanguageSection() {
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+
+        assertTrue(descendantLabelTexts(component).contains("Language"))
+        assertTrue(descendantLabelTexts(component).contains("Country or region:"))
+        assertFalse(descendantLabelTexts(component).contains("Commit language:"))
+
+        configurable.disposeUIResources()
+    }
+
+    fun testLanguageSelectionIsAppliedToSettingsState() {
+        val configurable = testConfigurable { _, _, _, _ -> Result.success(emptyList()) }
+        val component = configurable.createComponent()
+        val languageComboBox = languageComboBox(component)
+
+        languageComboBox.selectedItem = "Republic of Korea"
+        configurable.apply()
+
+        assertEquals(CommitLanguageRegion.REPUBLIC_OF_KOREA.name, CommitGenerationSettings.getInstance().state.languageRegionName)
 
         configurable.disposeUIResources()
     }
@@ -308,6 +405,18 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         assertTrue(diagnostic.hasGenerationCommand)
         assertEquals("npx", CommitGenerationSettings.getInstance().resolvedCommand)
         assertEquals("-y @zed-industries/codex-acp", CommitGenerationSettings.getInstance().resolvedArguments)
+
+        state.profileName = AgentProfile.JUNIE_ACP.name
+        state.command = ""
+        state.arguments = ""
+        state.model = ""
+        diagnostic = CommitGenerationSettings.getInstance().configurationDiagnostic()
+        assertTrue(diagnostic.isConfigured)
+        assertNull(diagnostic.reason)
+        assertTrue(diagnostic.hasGenerationCommand)
+        assertTrue(diagnostic.hasModelLoadCommand)
+        assertEquals("junie", CommitGenerationSettings.getInstance().resolvedCommand)
+        assertEquals("--acp true", CommitGenerationSettings.getInstance().resolvedArguments)
     }
 
     fun testExplicitCommandProvidesModelLoadCommandForProfileWithoutDefaultModelCommand() {
@@ -370,6 +479,24 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         configurable.disposeUIResources()
     }
 
+    fun testJunieProfileLoadsWithoutModelChoicesInSettingsUi() {
+        val state = CommitGenerationSettings.getInstance().state
+        state.profileName = AgentProfile.JUNIE_ACP.name
+        val loadRequests = mutableListOf<Triple<AgentProfile, String, List<String>>>()
+
+        val configurable = testConfigurable { profile, command, arguments, _ ->
+            loadRequests += Triple(profile, command, arguments)
+            Result.success(emptyList())
+        }
+        val component = configurable.createComponent()
+
+        assertEquals(listOf(Triple(AgentProfile.JUNIE_ACP, "junie", emptyList<String>())), loadRequests)
+        assertEquals(listOf("Agent default"), comboBoxItems(modelComboBox(component)))
+        assertEquals("The ACP agent did not report model choices. Agent default will be used.", modelStatusLabel(component).text)
+
+        configurable.disposeUIResources()
+    }
+
     private fun testConfigurable(
         loader: (AgentProfile, String, List<String>, String?) -> Result<List<String>>,
     ): CommitGenerationConfigurable =
@@ -389,6 +516,12 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
             (0 until comboBox.itemCount).any { comboBox.getItemAt(it) == "Agent default" }
         }
 
+    private fun languageComboBox(root: Component): JComboBox<*> =
+        descendantsOfType(root, JComboBox::class.java).single { comboBox ->
+            (0 until comboBox.itemCount).any { comboBox.getItemAt(it) == "Republic of Korea" } ||
+                (comboBox.editor.item?.toString() in CommitLanguageRegion.entries.map { it.displayName })
+        }
+
     private fun modelStatusLabel(root: Component): JLabel =
         descendantsOfType(root, JLabel::class.java).single { label ->
             val text = label.text.orEmpty()
@@ -403,7 +536,16 @@ class CommitGenerationConfigurableTest : BasePlatformTestCase() {
         }
 
     private fun modelItems(comboBox: JComboBox<*>): List<String> =
+        comboBoxItems(comboBox)
+
+    private fun comboBoxItems(comboBox: JComboBox<*>): List<String> =
         (0 until comboBox.itemCount).map { comboBox.getItemAt(it).toString() }
+
+    private fun languageRegionDisplayNames(): List<String> =
+        CommitLanguageRegion.entries.map { it.displayName }
+
+    private fun descendantLabelTexts(root: Component): List<String> =
+        descendantsOfType(root, JLabel::class.java).mapNotNull { label -> label.text }
 
     private fun <T> descendantsOfType(root: Component, expectedClass: Class<T>): List<T> {
         val matches = mutableListOf<T>()

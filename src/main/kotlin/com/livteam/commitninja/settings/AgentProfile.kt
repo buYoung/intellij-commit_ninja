@@ -10,7 +10,8 @@ enum class AgentProfile(
     NONE("Not configured", "", ""),
     OPENCODE("opencode", "opencode", "acp", defaultModelArguments = "models"),
     CLAUDE_AGENT_ACP("Claude", "npx", "-y @zed-industries/claude-agent-acp"),
-    CODEX_ACP("Codex", "npx", "-y @zed-industries/codex-acp", defaultModelCommand = "codex", defaultModelArguments = "debug models --bundled");
+    CODEX_ACP("Codex", "npx", "-y @zed-industries/codex-acp", defaultModelCommand = "codex", defaultModelArguments = "debug models --bundled"),
+    JUNIE_ACP("Junie", "junie", "--acp true");
 
     override fun toString(): String = displayName
 

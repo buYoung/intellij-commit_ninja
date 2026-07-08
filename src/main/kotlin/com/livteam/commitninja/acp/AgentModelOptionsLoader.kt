@@ -17,7 +17,9 @@ object AgentModelOptionsLoader {
             AgentProfile.OPENCODE -> AcpModelOptionsLoader.loadOpencodeModels(command, workingDirectory)
             AgentProfile.CODEX_ACP -> AcpModelOptionsLoader.loadCodexBundledModels(command, workingDirectory)
             AgentProfile.CLAUDE_AGENT_ACP -> AcpModelOptionsLoader.loadClaudeBuiltInModels()
-            AgentProfile.NONE -> Result.success(emptyList())
+            AgentProfile.JUNIE_ACP,
+            AgentProfile.NONE,
+            -> Result.success(emptyList())
         }
         result.fold(
             onSuccess = { models ->

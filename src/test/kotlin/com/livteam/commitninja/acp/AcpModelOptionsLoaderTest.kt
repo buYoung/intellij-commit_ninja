@@ -104,6 +104,19 @@ class AcpModelOptionsLoaderTest {
     }
 
     @Test
+    fun `junie profile returns empty model choices`() {
+        val result = AgentModelOptionsLoader.load(
+            profile = AgentProfile.JUNIE_ACP,
+            command = "junie",
+            arguments = listOf("--acp", "true"),
+            workingDirectory = null,
+        )
+
+        assertTrue(result.exceptionOrNull()?.message.orEmpty(), result.isSuccess)
+        assertEquals(emptyList<String>(), result.getOrThrow())
+    }
+
+    @Test
     fun `opencode profile uses ACP command defaults for generation`() {
         assertEquals("opencode", AgentProfile.OPENCODE.defaultCommand)
         assertEquals(listOf("acp"), AgentCommandLine.splitArguments(AgentProfile.OPENCODE.defaultArguments))
@@ -132,6 +145,17 @@ class AcpModelOptionsLoaderTest {
             listOf("-y", "@zed-industries/claude-agent-acp"),
             AgentCommandLine.splitArguments(AgentProfile.CLAUDE_AGENT_ACP.defaultArguments),
         )
+    }
+
+    @Test
+    fun `junie profile uses cli acp mode defaults for generation`() {
+        assertEquals("junie", AgentProfile.JUNIE_ACP.defaultCommand)
+        assertEquals(
+            listOf("--acp", "true"),
+            AgentCommandLine.splitArguments(AgentProfile.JUNIE_ACP.defaultArguments),
+        )
+        assertEquals("junie", AgentProfile.JUNIE_ACP.defaultModelCommand)
+        assertEquals(emptyList<String>(), AgentCommandLine.splitArguments(AgentProfile.JUNIE_ACP.defaultModelArguments))
     }
 
     @Test
