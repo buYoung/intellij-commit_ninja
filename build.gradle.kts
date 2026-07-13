@@ -7,7 +7,7 @@ plugins {
 }
 
 dependencies {
-    implementation("com.agentclientprotocol:acp:0.24.0") {
+    implementation("com.agentclientprotocol:acp:0.25.0") {
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
         exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
         exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
